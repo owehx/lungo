@@ -4,6 +4,7 @@ import { takePrefs } from "./prefs";
 import { geometry, leaves, neighbor, remove, resize as resizeLayout, split as splitLayout, type Dir, type Layout } from "./panes";
 import {
   api,
+  call,
   errText,
   on,
   type AppInfo,
@@ -41,7 +42,8 @@ export const machineLabel = (machine?: string) => (!machine || machine === LOCAL
  */
 export interface Tab {
   key: string;
-  kind: "session" | "shell" | "local";
+  // joined: someone else's session, shared with you over the tailnet (see lib/collab).
+  kind: "session" | "shell" | "local" | "joined";
   machine?: string;
   session?: string; // tmux session name; a local pane has one when tmux is installed here
   title: string; // last-resort name
@@ -63,6 +65,9 @@ export interface Tab {
   url?: string;
   exited?: boolean;
   error?: string;
+  // A joined pane: the invite link, and what it was for (who shares it, what it is called,
+  // whether you can type).
+  join?: { link: string; id?: string; title?: string; by?: string; role?: string; code?: string }; // code: 7KX-4PQ, to pass on
 }
 
 /** The ⌃Tab switcher while it is open: panes most-recent first and the one selected. */
@@ -338,6 +343,9 @@ const subscribe = (l: () => void) => {
   listeners.add(l);
   return () => listeners.delete(l);
 };
+
+// Dev checks read the state from a headless browser.
+if (import.meta.env.DEV) (window as unknown as { __skyState?: () => State }).__skyState = () => state;
 
 export function getState(): State {
   return state;
@@ -677,7 +685,7 @@ export function moveGroupToNewWindow(id: string) {
 }
 
 function newWindowWith(tabs: Tab[], then?: () => void, split?: Layout, focus?: string) {
-  const panes: SavedPane[] = tabs.map((t) => ({ key: t.key, kind: t.kind, machine: t.machine, session: t.session, title: t.title, cwd: t.cwd ?? t.spawn?.dir, sid: t.sid, flags: t.flags, claude: liveClaude(t), agent: t.agent }));
+  const panes: SavedPane[] = tabs.map((t) => ({ key: t.key, kind: t.kind, machine: t.machine, session: t.session, title: t.title, cwd: t.cwd ?? t.spawn?.dir, sid: t.sid, flags: t.flags, claude: liveClaude(t), agent: t.agent, join: t.join }));
   const layout = { panes, groups: [{ id: "g1", layout: split ?? { pane: tabs[0].key }, focus: focus ?? tabs[0].key }], activeGroup: "g1" };
   api.newWindowWith(JSON.stringify(layout)).then(
     () => then?.(),
@@ -819,6 +827,16 @@ export function isIdleShell(s: Session): boolean {
   return s.name.startsWith(SHELL_PREFIX) && SHELLS.has(s.command);
 }
 
+/** Someone else's session, from its invite link, in a pane of its own (the one it is in already, if any). */
+export function openJoinedTab(j: NonNullable<Tab["join"]>, where: "group" | Dir = "group") {
+  const existing = state.tabs.find((t) => t.kind === "joined" && (t.join?.link === j.link || (!!j.id && t.join?.id === j.id)));
+  if (existing) {
+    if (existing.error) retryNow(existing.key);
+    return focusPane(existing.key);
+  }
+  placePane({ key: tabKey(), kind: "joined", title: j.title || "Shared session", join: j }, where);
+}
+
 /** A shell on a machine, in dir when given (home otherwise). */
 export function openShellTab(machine: string, where: "group" | Dir = "group", dir?: string, run?: string) {
   if (machine === LOCAL) return openLocalTab(where, dir, false, undefined, undefined, run);
@@ -952,6 +970,7 @@ function ownTitle(t: Tab): string {
 
 /** The name to show for a pane: what its program calls itself, else its folder. */
 export function paneTitle(t: Tab): string {
+  if (t.kind === "joined") return state.meta[metaKey(t)]?.name || ownTitle(t) || t.join?.title || t.title;
   return state.meta[metaKey(t)]?.name || ownTitle(t) || (t.cwd ? folderName(t.cwd) : t.kind !== "shell" && t.session && !t.session.startsWith(SHELL_PREFIX) ? t.session : t.title);
 }
 
@@ -1118,6 +1137,8 @@ export function closeTab(key: string) {
   const m = t && tabMachine(t);
   if (t && m && t.session && (t.kind === "shell" || t.session.startsWith(SHELL_PREFIX) || (t.session.startsWith("claude") && !liveClaude(t) && !!t.running)))
     api.closeShell(m, t.session).catch(() => {});
+  // A joined pane leaves the share (its forwarded ports close), unless another pane is in it.
+  if (t?.kind === "joined" && t.join?.id && !state.tabs.some((x) => x.key !== key && x.join?.id === t.join?.id)) call("LeaveShare", t.join.id).catch(() => {});
   releaseTab(key);
 }
 
@@ -1281,7 +1302,7 @@ export function movePaneTo(key: string, machine: string, dir: string, resume?: s
 export function reattachTab(key: string) {
   const t = state.tabs.find((x) => x.key === key);
   if (!t) return;
-  if (persistent(t)) return retryNow(key);
+  if (persistent(t) || t.kind === "joined") return retryNow(key);
   if (t.termId) api.closeTerminal(t.termId).catch(() => {});
   // Without tmux a local pane gets a fresh shell where the old one was.
   updateTab(key, { termId: undefined, url: undefined, exited: false, error: undefined, spawn: { dir: t.cwd ?? t.spawn?.dir }, claude: false });
@@ -1475,7 +1496,7 @@ let opening = "";
 // their sessions again by name; a session that is gone (the machine restarted, this computer
 // did) is made again in the folder it was in, with Claude resuming its conversation.
 const LAYOUT = "layout.v1";
-type SavedPane = Pick<Tab, "key" | "kind" | "machine" | "session" | "title" | "cwd" | "sid" | "flags" | "agent"> & { claude?: boolean; seen?: number; at?: number };
+type SavedPane = Pick<Tab, "key" | "kind" | "machine" | "session" | "title" | "cwd" | "sid" | "flags" | "agent" | "join"> & { claude?: boolean; seen?: number; at?: number };
 
 let dormant = false;
 let keptShells = "";
@@ -1483,7 +1504,7 @@ let keptLayout = "";
 
 export function saveLayout() {
   if (dormant) return;
-  const panes: SavedPane[] = state.tabs.map((t) => ({ key: t.key, kind: t.kind, machine: t.machine, session: t.session, title: t.title, cwd: t.cwd ?? t.spawn?.dir, sid: t.sid, flags: t.flags, claude: liveClaude(t), agent: t.agent, seen: aliveAt.get(t.key), at: t.key === state.activeTab ? Date.now() : lastActive.get(t.key) }));
+  const panes: SavedPane[] = state.tabs.map((t) => ({ key: t.key, kind: t.kind, machine: t.machine, session: t.session, title: t.title, cwd: t.cwd ?? t.spawn?.dir, sid: t.sid, flags: t.flags, claude: liveClaude(t), agent: t.agent, join: t.join, seen: aliveAt.get(t.key), at: t.key === state.activeTab ? Date.now() : lastActive.get(t.key) }));
   const groups = state.groups.map((g) => ({ ...g, zoom: false }));
   const layout = JSON.stringify({ panes, groups, activeGroup: state.activeGroup });
   if (layout !== keptLayout) {
@@ -1536,8 +1557,8 @@ export function restoreLayout(machineNames: string[]) {
     let saved = JSON.parse(raw) as SavedLayout;
     if (before) saved = rekey(saved);
     const known = new Set(machineNames);
-    const kinds = new Set(["session", "shell", "local"]);
-    const panes = saved.panes.filter((p) => kinds.has(p.kind) && (p.kind === "local" || (p.machine && known.has(p.machine))));
+    const kinds = new Set(["session", "shell", "local", "joined"]);
+    const panes = saved.panes.filter((p) => kinds.has(p.kind) && (p.kind === "local" || (p.kind === "joined" ? !!p.join?.link : p.machine && known.has(p.machine))));
     const keep = new Set(panes.map((p) => p.key));
     const groups: Group[] = [];
     for (const g of saved.groups ?? []) {
@@ -1561,6 +1582,7 @@ export function restoreLayout(machineNames: string[]) {
         const resume = p.sid || (alone ? "continue" : undefined);
         const spawn: Tab["spawn"] = claude ? { dir: p.cwd, claude: true, resume, flags: p.flags } : p.agent ? { dir: p.cwd, agent: p.agent, resume: "continue" } : { dir: p.cwd };
         if (p.kind === "session") return { ...p, claude, spawn };
+        if (p.kind === "joined") return { ...p, claude: undefined, sid: undefined }; // joins again when it is shown
         // Every shell pane has a session name, so none opens an anonymous shell on a machine.
         if (p.kind === "shell") return { ...p, session: p.session || shellName(), spawn };
         // Without tmux here a local pane is a new shell in the folder it was in.

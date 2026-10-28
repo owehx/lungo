@@ -33,6 +33,8 @@ import {
   openWelcome,
 } from "./lib/store";
 import { isNativeWebview } from "./lib/util";
+import { askJoin, watchShares } from "./lib/collab";
+import { JoinHost } from "./components/Share";
 import { Sidebar } from "./components/Sidebar";
 import { Palette } from "./components/Palette";
 import { HistoryDialog } from "./components/History";
@@ -84,6 +86,9 @@ function handleMenu(name: string, arg?: unknown, arg2?: unknown) {
       break;
     case "switch":
       switchStep(arg as 1 | -1, arg2 as SwitcherState["mod"]);
+      break;
+    case "join":
+      void askJoin();
       break;
     case "needs-you":
       jumpNeedsYou();
@@ -221,7 +226,7 @@ function browserShortcut(e: KeyboardEvent): [string, ...unknown[]] | null {
   if (e.shiftKey) {
     const digit = /^Digit([0-9])$/.exec(e.code);
     if (digit) return ["workspace", parseInt(digit[1])];
-    const shifted: Record<string, string> = { s: "screen", t: "new-session", d: "split-down", n: "new-window", enter: "zoom", "]": "next-tab", "}": "next-tab", "[": "prev-tab", "{": "prev-tab", "+": "zoom-in", "=": "zoom-in", r: "recipes", f: "search-all" };
+    const shifted: Record<string, string> = { s: "screen", t: "new-session", d: "split-down", n: "new-window", enter: "zoom", "]": "next-tab", "}": "next-tab", "[": "prev-tab", "{": "prev-tab", "+": "zoom-in", "=": "zoom-in", r: "recipes", f: "search-all", j: "join" };
     if (shifted[k]) return [shifted[k]];
   }
   const plain: Record<string, string> = {
@@ -265,6 +270,7 @@ export function App() {
 
   useEffect(() => {
     wireEvents();
+    watchShares();
     api
       .info()
       .then((info) => {
@@ -427,6 +433,7 @@ export function App() {
       <PeekOverlay />
       <Switcher />
       <ContextMenuHost />
+      <JoinHost />
       <Toasts />
     </div>
   );

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AppWindow, ArrowRight, BellDot, CircleUserRound, Columns2, Copy, ExternalLink, FolderSync, House, Moon, PanelLeft, Play, Plus, Power, RefreshCw, Search, Server, Settings, SquareTerminal, ZoomIn, ZoomOut } from "lucide-react";
+import { AppWindow, ArrowRight, UserPlus, Users, BellDot, CircleUserRound, Columns2, Copy, ExternalLink, FolderSync, House, Moon, PanelLeft, Play, Plus, Power, RefreshCw, Search, Server, Settings, SquareTerminal, ZoomIn, ZoomOut } from "lucide-react";
 import { api, errText } from "../lib/api";
 import {
   focusPane,
@@ -30,8 +30,10 @@ import {
   liveClaude,
   restartClaude,
   moveToNewWindow,
+  persistent,
 } from "../lib/store";
 import { launchRecipe, recipeWhere } from "./Recipes";
+import { askJoin, normalCode, openJoin, readInvite, shareTab, showCode } from "../lib/collab";
 import { askConfirm } from "./ContextMenu";
 import { THEMES } from "../lib/themes";
 import { resume, toggleDialog, usePastConversations } from "../lib/history";
@@ -133,6 +135,15 @@ export function Palette({ onClose }: { onClose: () => void }) {
       if (cur && liveClaude(cur) && cur.session)
         list.push({ id: "restart-claude", group: "Actions", title: "Restart Claude here, keep the conversation", hint: "picks up changed settings", icon: <RefreshCw size={14} />, run: () => { setState({ modal: null }); void restartClaude(cur, (title, body) => askConfirm({ title, body, confirm: "Restart", danger: true })); } });
     }
+    {
+      // Sessions shared over the tailnet: share the one in front, or join someone's.
+      const cur = getState().tabs.find((t) => t.key === getState().activeTab);
+      if (cur && cur.kind !== "joined" && persistent(cur)) {
+        list.push({ id: "share", group: "Actions", title: "Share this session", hint: "copies its link, says its code", icon: <UserPlus size={14} />, run: () => { setState({ modal: null }); void shareTab(cur, paneTitle(cur), "edit"); } });
+        list.push({ id: "share-view", group: "Actions", title: "Share this session to watch only", hint: "copies a watch-only link", icon: <UserPlus size={14} />, run: () => { setState({ modal: null }); void shareTab(cur, paneTitle(cur), "view"); } });
+      }
+      list.push({ id: "join", group: "Actions", title: "Join a shared session…", hint: "with a code or a link", icon: <Users size={14} />, keys: `⇧${mod}J`, run: () => { setState({ modal: null }); void askJoin(); } });
+    }
     list.push({ id: "composer", group: "Actions", title: "Write a prompt…", icon: <SquareTerminal size={14} />, keys: `${mod}E`, run: () => setState({ modal: { type: "composer" } }) });
     for (const w of getState().workspaces) list.push({ id: `ws-${w}`, group: "Workspaces", title: `Workspace: ${w}`, icon: <AppWindow size={14} />, run: () => { setState({ modal: null, view: "sessions" }); setWorkspace(w); } });
     if (getState().workspaces.length) list.push({ id: "ws-all", group: "Workspaces", title: "Workspace: all tabs", icon: <AppWindow size={14} />, keys: `⇧${mod}0`, run: () => { setState({ modal: null, view: "sessions" }); setWorkspace(null); } });
@@ -177,6 +188,13 @@ export function Palette({ onClose }: { onClose: () => void }) {
   }, [machines, sessions, tabs, past]);
 
   const shown = useMemo(() => {
+    // A code (codes always have a digit: a word is never taken for one) or a link pasted.
+    const inv = /^\s*lungo:\/\/join\//i.test(q) ? readInvite(q) : /\d/.test(q) && normalCode(q) ? { code: normalCode(q) } : null;
+    if (inv && (inv.code || inv.link)) {
+      const what = inv.code ?? inv.link!;
+      const join: Cmd = { id: "join-link", group: "Actions", title: inv.code ? `Join session ${showCode(inv.code)}` : "Join this shared session", hint: inv.code ? "looks for it on your tailnet" : what.replace(/\?.*$/, ""), icon: <Users size={14} />, run: () => { setState({ modal: null }); openJoin(what, true); } };
+      return [join];
+    }
     if (!q.trim()) {
       return cmds.filter((c) => c.group !== "Theme" && (c.group !== "Open panes" || tabs.length < 8)).slice(0, 70);
     }
@@ -239,7 +257,7 @@ export function Palette({ onClose }: { onClose: () => void }) {
                 {header && <div className="px-2.5 pt-2.5 pb-1 text-[11px] font-medium text-subtle">{c.group}</div>}
                 <button
                   data-i={i}
-                  onMouseMove={() => setSel(i)}
+                  onMouseMove={() => i !== sel && setSel(i)} // the browser moves the mouse itself as rows change under it
                   onClick={() => c.run()}
                   className={cx("flex h-9 w-full items-center gap-3 rounded-lg px-2.5 text-left text-[13px]", i === sel ? "bg-active text-fg" : "text-fg")}
                 >

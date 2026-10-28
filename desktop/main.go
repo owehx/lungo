@@ -78,6 +78,7 @@ func main() {
 		OnShutdown:       app.shutdown,
 		Bind:             bind,
 		Mac: &mac.Options{
+			OnUrlOpen:            app.openedWith, // a lungo:// invite clicked anywhere
 			TitleBar:             mac.TitleBarHiddenInset(),
 			WebviewIsTransparent: true,
 			WindowIsTranslucent:  true,
@@ -153,6 +154,7 @@ func appMenu(app *App) *menu.Menu {
 	sw.AddText("Most Recent (Option)", keys.OptionOrAlt("tab"), emit("switch", 1, "Alt"))
 	sw.AddText("Least Recent (Option)", keys.Combo("tab", keys.OptionOrAltKey, keys.ShiftKey), emit("switch", -1, "Alt"))
 	s.AddText("Next Session That Needs You", acc("j"), emit("needs-you"))
+	s.AddText("Join a Shared Session…", acc2("j"), emit("join"))
 	s.AddSeparator()
 	s.AddText("Command Palette…", acc("k"), emit("palette"))
 	s.AddText("Write a Prompt…", acc("e"), emit("composer"))

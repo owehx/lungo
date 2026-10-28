@@ -21,6 +21,7 @@ import {
   SquareTerminal,
   TerminalSquare,
   Trash2,
+  Users,
   X,
 } from "lucide-react";
 import type { MachineView, Session } from "../lib/api";
@@ -60,7 +61,11 @@ import {
   loadSessions,
   visibleGroups,
   openTogether,
+  closeTab,
+  type Tab,
 } from "../lib/store";
+import { askJoin, firstName, shareFor, usePresence, useShares } from "../lib/collab";
+import { Avatars, JoinedIcon } from "./Share";
 import { getDragged, setDragged } from "../lib/drag";
 import { openScreen } from "../lib/screen";
 import { leaves, type Layout } from "../lib/panes";
@@ -263,6 +268,7 @@ export function Sidebar() {
       "sep",
       { label: "New session with options…", icon: <SlidersHorizontal size={13} />, hint: `⇧${mod}T`, onClick: () => setState({ modal: { type: "new-session" } }) },
       ...(where !== LOCAL ? [{ label: "New terminal on this computer", icon: <LocalIcon size={13} />, hint: `${mod}L`, onClick: () => openLocalTab() }] : []),
+      { label: "Join a shared session…", icon: <Users size={13} />, hint: `⇧${mod}J`, onClick: () => void askJoin() },
       "sep",
       { label: "New machine…", icon: <Plus size={13} />, hint: `${mod}N`, onClick: () => setState({ modal: { type: "new-machine" } }) },
       { label: "Add an existing machine…", icon: <Server size={13} />, onClick: () => setState({ modal: { type: "add-machine" } }) },
@@ -346,6 +352,7 @@ export function Sidebar() {
 
       <PickContext.Provider value={picking}>
       <div className="mt-1.5 min-h-0 flex-1 overflow-y-auto px-2 pb-2 [scrollbar-width:thin]">
+        <SharedWithYou tabs={tabs} activeTab={view === "sessions" ? activeTab : undefined} />
         {mode === "status" ? (
           <>
             {BUCKETS.map((b) => (
@@ -399,6 +406,57 @@ export function Sidebar() {
       <UpdateReady />
       <UsageFooter />
     </aside>
+  );
+}
+
+/** Sessions other people share with you, open in this window: whose, and what they are doing. */
+function SharedWithYou({ tabs, activeTab }: { tabs: Tab[]; activeTab?: string }) {
+  const joined = tabs.filter((t) => t.kind === "joined");
+  if (!joined.length) return null;
+  return (
+    <div className="mt-1">
+      <div className="flex h-[24px] items-center gap-1.5 pl-2 text-[11.5px] font-medium text-muted">
+        Shared with you <span className="text-[10.5px] font-normal text-subtle tabular-nums">{joined.length}</span>
+      </div>
+      {joined.map((t) => (
+        <JoinedRow key={t.key} t={t} active={t.key === activeTab} />
+      ))}
+    </div>
+  );
+}
+
+function JoinedRow({ t, active }: { t: Tab; active: boolean }) {
+  const info = usePresence(t.key, (s) => s.info);
+  const people = usePresence(t.key, (s) => s.people);
+  const you = usePresence(t.key, (s) => s.you);
+  const others = (people ?? []).filter((m) => m.id !== you && !m.host);
+  const state = info?.state === "waiting" ? "needs you" : info?.state === "working" ? "working" : "";
+  const by = firstName(people?.find((m) => m.host)?.name ?? t.join?.by);
+  return (
+    <button
+      onClick={() => focusPane(t.key)}
+      onContextMenu={(e) => showMenu(e, [{ label: "Leave", onClick: () => closeTab(t.key) }])}
+      title={`${paneTitle(t)}\n${by}'s session${info?.where ? ` on ${info.where}` : ""}${info?.folder ? ` · ${info.folder}` : ""}`}
+      className={cx("group/row no-drag relative flex w-full items-start gap-2 rounded-md py-[5px] pr-2 pl-2 text-left transition-colors", active ? "bg-active" : "hover:bg-hover", t.error && !active && "opacity-55")}
+    >
+      <span className="mt-[1px] flex w-[15px] shrink-0 justify-center">
+        <JoinedIcon tab={t} size={13} />
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+        <span className="flex h-[16px] items-center gap-2">
+          <span className={cx("min-w-0 flex-1 truncate text-[12.5px]", active ? "text-fg" : "text-muted group-hover/row:text-fg")}>{paneTitle(t)}</span>
+          {others.length > 0 && <Avatars people={others} size={13} max={2} />}
+        </span>
+        <span className="flex h-[14px] min-w-0 items-center gap-[5px] text-[11px] whitespace-nowrap text-subtle">
+          {state && <span className={cx("shrink-0", state === "needs you" ? "text-warn" : "text-ok")}>{state}</span>}
+          {state && <span className="opacity-50">·</span>}
+          <span className="truncate">
+            {t.error ? "ended" : by}
+            {info?.folder ? ` · ${info.folder}` : ""}
+          </span>
+        </span>
+      </span>
+    </button>
   );
 }
 
@@ -1063,6 +1121,8 @@ const SessionRow = memo(function SessionRow({ s, activeKey, grouped, where = tru
   const home = useStore((x) => x.info?.home);
   const shortcut = useStore((x) => tabShortcuts(x).get(keyOf(s)) ?? "");
   const active = activeKey === `${s.machine}/${s.name}` && view === "sessions";
+  const shares = useShares();
+  const guests = shareFor(s.machine, s.name, shares)?.people.filter((m) => !m.host) ?? [];
   const { picked, click } = useContext(PickContext);
   const isPicked = picked.has(keyOf(s));
   const color = colorValue(meta?.color);
@@ -1108,6 +1168,11 @@ const SessionRow = memo(function SessionRow({ s, activeKey, grouped, where = tru
       <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
         <span className="flex h-[16px] items-center gap-2">
           <span className={cx("min-w-0 flex-1 truncate text-[12.5px]", active || b === "waiting" || b === "working" ? "text-fg" : "text-muted group-hover/row:text-fg")}>{title}</span>
+          {guests.length > 0 && (
+            <span className="shrink-0" title={`Shared: ${guests.map((m) => firstName(m.name)).join(", ")} here`}>
+              <Avatars people={guests} size={13} max={2} />
+            </span>
+          )}
           {shortcut && <span className="hidden shrink-0 text-[10.5px] text-subtle tabular-nums group-hover/row:inline">{shortcut}</span>}
         </span>
         <span className="flex h-[14px] min-w-0 items-center gap-[5px] text-[11px] whitespace-nowrap text-subtle">

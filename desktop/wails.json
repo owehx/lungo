@@ -15,6 +15,13 @@
     "productName": "Lungo",
     "productVersion": "0.3.2",
     "copyright": "",
-    "comments": "Machines and Claude Code sessions"
+    "comments": "Machines and Claude Code sessions",
+    "protocols": [
+      {
+        "scheme": "lungo",
+        "description": "Lungo invite link",
+        "role": "Editor"
+      }
+    ]
   }
 }

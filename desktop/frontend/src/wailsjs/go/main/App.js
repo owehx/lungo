@@ -62,6 +62,10 @@ export function ClaudeAutoSwitch() {
   return window['go']['main']['App']['ClaudeAutoSwitch']();
 }
 
+export function ClaudeLocalLogin() {
+  return window['go']['main']['App']['ClaudeLocalLogin']();
+}
+
 export function ClaudeMoveSessions() {
   return window['go']['main']['App']['ClaudeMoveSessions']();
 }
@@ -70,16 +74,12 @@ export function ClaudePreciseScroll() {
   return window['go']['main']['App']['ClaudePreciseScroll']();
 }
 
-export function ClaudeStatus() {
-  return window['go']['main']['App']['ClaudeStatus']();
-}
-
-export function ClaudeLocalLogin() {
-  return window['go']['main']['App']['ClaudeLocalLogin']();
-}
-
 export function ClaudeSource() {
   return window['go']['main']['App']['ClaudeSource']();
+}
+
+export function ClaudeStatus() {
+  return window['go']['main']['App']['ClaudeStatus']();
 }
 
 export function ClaudeStrategy() {
@@ -104,6 +104,10 @@ export function CloseTerminal(arg1) {
 
 export function CloseTunnel(arg1) {
   return window['go']['main']['App']['CloseTunnel'](arg1);
+}
+
+export function CollabLocal() {
+  return window['go']['main']['App']['CollabLocal']();
 }
 
 export function Connect(arg1) {
@@ -146,6 +150,10 @@ export function FocusSession(arg1, arg2) {
   return window['go']['main']['App']['FocusSession'](arg1, arg2);
 }
 
+export function ForwardSharedPort(arg1, arg2) {
+  return window['go']['main']['App']['ForwardSharedPort'](arg1, arg2);
+}
+
 export function GrowDisk(arg1, arg2) {
   return window['go']['main']['App']['GrowDisk'](arg1, arg2);
 }
@@ -162,6 +170,10 @@ export function InstallTmux() {
   return window['go']['main']['App']['InstallTmux']();
 }
 
+export function JoinShare(arg1) {
+  return window['go']['main']['App']['JoinShare'](arg1);
+}
+
 export function JoinTailscale(arg1) {
   return window['go']['main']['App']['JoinTailscale'](arg1);
 }
@@ -172,6 +184,10 @@ export function KillSession(arg1, arg2) {
 
 export function LastSyncAll() {
   return window['go']['main']['App']['LastSyncAll']();
+}
+
+export function LeaveShare(arg1) {
+  return window['go']['main']['App']['LeaveShare'](arg1);
 }
 
 export function Links() {
@@ -212,6 +228,10 @@ export function MoveClaudeAccount(arg1, arg2) {
 
 export function MoveFolder(arg1, arg2, arg3) {
   return window['go']['main']['App']['MoveFolder'](arg1, arg2, arg3);
+}
+
+export function MoveSession(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['MoveSession'](arg1, arg2, arg3, arg4);
 }
 
 export function NewSession(arg1, arg2) {
@@ -288,6 +308,10 @@ export function PaneIntent(arg1) {
 
 export function PeekFile(arg1, arg2) {
   return window['go']['main']['App']['PeekFile'](arg1, arg2);
+}
+
+export function PendingLink() {
+  return window['go']['main']['App']['PendingLink']();
 }
 
 export function PickFile(arg1) {
@@ -368,6 +392,10 @@ export function RemoveAPIKey(arg1) {
 
 export function RemoveClaudeAccount(arg1) {
   return window['go']['main']['App']['RemoveClaudeAccount'](arg1);
+}
+
+export function RemoveFromShare(arg1, arg2) {
+  return window['go']['main']['App']['RemoveFromShare'](arg1, arg2);
 }
 
 export function RemoveLink(arg1) {
@@ -510,6 +538,10 @@ export function SetPrefs(arg1) {
   return window['go']['main']['App']['SetPrefs'](arg1);
 }
 
+export function SetShareRole(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetShareRole'](arg1, arg2, arg3);
+}
+
 export function SetSyncItems(arg1, arg2) {
   return window['go']['main']['App']['SetSyncItems'](arg1, arg2);
 }
@@ -522,12 +554,28 @@ export function Settings() {
   return window['go']['main']['App']['Settings']();
 }
 
+export function ShareSession(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ShareSession'](arg1, arg2, arg3);
+}
+
+export function SharedPorts(arg1) {
+  return window['go']['main']['App']['SharedPorts'](arg1);
+}
+
+export function Shares() {
+  return window['go']['main']['App']['Shares']();
+}
+
 export function StartMachine(arg1) {
   return window['go']['main']['App']['StartMachine'](arg1);
 }
 
 export function StopMachine(arg1) {
   return window['go']['main']['App']['StopMachine'](arg1);
+}
+
+export function StopSharing(arg1) {
+  return window['go']['main']['App']['StopSharing'](arg1);
 }
 
 export function SyncMachines(arg1, arg2) {

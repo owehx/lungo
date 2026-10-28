@@ -37,6 +37,8 @@ import { showMenu, type MenuRow } from "./ContextMenu";
 import { KNOWN_EXTENSIONS, filesOf, peekByName } from "../lib/peek";
 import { arrived, holdsOff, useMoving } from "../lib/move";
 import { MoveOverlay } from "./MoveButton";
+import { clientId, firstName, joinOf, linkPresence, presenceOf, presenceURL, usePresence, useShareOf } from "../lib/collab";
+import { PresenceLayer } from "./Presence";
 
 function currentTheme(): ITheme {
   return activeSkin().term;
@@ -185,6 +187,11 @@ const shortWhy = (why?: string) => (why ?? "").replace(/^ssh: /, "").replace(/; 
 // into a pane the wheel took back into its history, so the typing reaches the program.
 const LEAVE_SCROLLBACK = "\x1b[9001~";
 
+// What the terminal answers by itself when tmux asks what it is (its type, its colours, where
+// the cursor is) and focus changes: not typing. Prefixed with a key, tmux takes the answer for
+// keys typed into the session.
+const REPORT = /^(\x1b(\[[?>]?[0-9;]*[cRnt]|\][^\x07\x1b]*(\x07|\x1b\\)|P[^\x1b]*\x1b\\|\[[IO]))+$/;
+
 /**
  * How a session pane takes input, from the session list: "m" the program wants the mouse
  * (Claude's fullscreen view, vim), "a" it uses the whole screen, "k" its tmux knows
@@ -303,7 +310,10 @@ export const TerminalView = memo(function TerminalView({ tab, active, focused }:
   const sentSize = useRef(""); // the size the backend was last told
   const tabRef = useRef(tab);
   tabRef.current = tab;
-  const input = useStore((s) => inputFlags(tab, s.sessions.sessions));
+  const ownInput = useStore((s) => inputFlags(tab, s.sessions.sessions));
+  // A joined pane's session is in the other computer's list: its share says how it takes input.
+  const joinedInput = usePresence(tab.key, (s) => (s.info ? (s.info.mouse ? "m" : "") + (s.info.alt ? "a" : "") + (s.info.scrollKey ? "k" : "") : ""));
+  const input = tab.kind === "joined" ? (joinedInput ?? "") : ownInput;
   const inputRef = useRef(input);
   inputRef.current = input;
   // How far the wheel took the pane into tmux's scrollback (0: at the live screen). Anything
@@ -312,6 +322,17 @@ export const TerminalView = memo(function TerminalView({ tab, active, focused }:
   const activeRef = useRef(active);
   activeRef.current = active;
   const zoom = useStore((s) => s.zoom);
+  // Shared: the pane's session is shared with people (share), or is someone else's session
+  // (joined). A joined pane is drawn at the session's own size (sharedSize), whatever the
+  // pane's, so everyone sees the same screen and points at the same cells.
+  const joined = tab.kind === "joined";
+  const share = useShareOf(tab);
+  const sharedSize = usePresence(tab.key, (s) => s.size);
+  const joinSize = useRef<{ cols: number; rows: number } | undefined>(undefined); // the session's size when it was joined
+  const settling = useRef(0); // a joined pane's font is being fitted
+  const sharedRef = useRef(sharedSize);
+  sharedRef.current = sharedSize ?? joinSize.current;
+  const viewOnly = usePresence(tab.key, (s) => s.role === "view") ?? false;
 
   // Create xterm once.
   useEffect(() => {
@@ -327,10 +348,10 @@ export const TerminalView = memo(function TerminalView({ tab, active, focused }:
       allowProposedApi: true,
       // A session pane draws tmux's screen, and tmux keeps the history; a plain shell keeps
       // its own.
-      scrollback: persistent(tab) ? 2000 : 20000,
+      scrollback: persistent(tab) || tab.kind === "joined" ? 2000 : 20000,
       // The room kept on the right for xterm's scrollbar. A session in tmux scrolls inside
       // tmux and never shows one, so it gets the full width.
-      overviewRuler: { width: persistent(tab) ? 1 : 8 },
+      overviewRuler: { width: persistent(tab) || tab.kind === "joined" ? 1 : 8 },
       macOptionClickForcesSelection: true,
       // A right-click opens the menu; selecting (and so copying) the word under it would
       // replace what is on the clipboard just before Paste.
@@ -456,6 +477,13 @@ export const TerminalView = memo(function TerminalView({ tab, active, focused }:
     });
     let copyTimer: number | undefined;
     t.onSelectionChange(() => {
+      // The people in a shared session see what you select, in your colour.
+      const p = presenceOf(tabRef.current.key);
+      if (p) {
+        const pos = t.getSelectionPosition();
+        const top = t.buffer.active.viewportY;
+        p.select(pos && t.hasSelection() ? { a: [pos.start.x, pos.start.y - top], b: [pos.end.x, pos.end.y - top] } : null);
+      }
       window.clearTimeout(copyTimer);
       copyTimer = window.setTimeout(() => {
         const s = t.getSelection();
@@ -488,7 +516,7 @@ export const TerminalView = memo(function TerminalView({ tab, active, focused }:
       if (!selection?.shouldForceSelection) return;
       const xtermOwn = selection.shouldForceSelection.bind(selection);
       selection.shouldForceSelection = (e: MouseEvent) => {
-        if (!persistent(tabRef.current)) return xtermOwn(e);
+        if (!persistent(tabRef.current) && tabRef.current.kind !== "joined") return xtermOwn(e);
         if (e.button === 2 || e.metaKey) return true; // ⌘-click is the app's: it opens a file name
         return inputRef.current.includes("m") ? e.altKey : !e.altKey;
       };
@@ -517,7 +545,7 @@ export const TerminalView = memo(function TerminalView({ tab, active, focused }:
         eagerly(show);
         eagerly(() => {
           if (disposed || activeRef.current || tabRef.current.termId || tabRef.current.error || opening.current) return;
-          const size = hiddenSize();
+          const size = tabRef.current.kind === "joined" ? sharedRef.current : hiddenSize();
           try {
             if (size) t.resize(size.cols, size.rows);
           } catch {
@@ -605,11 +633,41 @@ export const TerminalView = memo(function TerminalView({ tab, active, focused }:
 
   /** What the keyboard (or a paste) sends: out of tmux's scrollback first, if it's there. */
   function typed(d: string) {
-    if (back.current > 0 && !d.startsWith("\x1b[<")) {
+    if (REPORT.test(d)) return send(d);
+    const presence = presenceOf(tabRef.current.key);
+    // In a shared session someone else may have scrolled the session back (tmux scrolls it for
+    // everyone): typing always leaves the scrollback first there.
+    const together = tabRef.current.kind === "joined" || !!presence?.crowded();
+    if ((back.current > 0 || together) && !d.startsWith("\x1b[<")) {
       back.current = 0;
       if (inputRef.current.includes("k")) d = LEAVE_SCROLLBACK + d;
     }
+    // A guest's typing is seen on its way to the session; the person sharing says so.
+    if (tabRef.current.kind !== "joined" && !d.startsWith("\x1b[<")) presence?.typed();
     send(d);
+  }
+
+  /** Where the pointer is over the screen, in cells and fractions of one (off it: null). */
+  function cellAt(e: React.MouseEvent) {
+    const t = term.current;
+    const screen = t?.element?.querySelector<HTMLElement>(".xterm-screen");
+    if (!t || !screen) return null;
+    const box = screen.getBoundingClientRect();
+    const c = ((e.clientX - box.left) / box.width) * t.cols;
+    const r = ((e.clientY - box.top) / box.height) * t.rows;
+    return c >= 0 && r >= 0 && c <= t.cols && r <= t.rows ? { c, r } : null;
+  }
+
+  /** Where the pointer is, for the others in a shared session. */
+  function pointerMoved(e: React.MouseEvent) {
+    presenceOf(tabRef.current.key)?.pointer(cellAt(e));
+  }
+
+  /** A click, for the others to see land (before xterm, which keeps some to itself). */
+  function pointerDown(e: React.MouseEvent) {
+    const p = e.button === 0 ? presenceOf(tabRef.current.key) : undefined;
+    const at = p && cellAt(e);
+    if (at) p.click(at);
   }
 
   /** The app's menu for a right-click in the terminal. */
@@ -646,6 +704,7 @@ export const TerminalView = memo(function TerminalView({ tab, active, focused }:
     const t = term.current;
     if (!t?.element) return;
     if (!on) return releaseGPU();
+    if (settling.current) return; // a joined pane fitting its font: once it has (fitShared)
     if (gl.current) return gpuUsed(tabRef.current.key, releaseGPU);
     if (gpuOff) return;
     try {
@@ -673,12 +732,50 @@ export const TerminalView = memo(function TerminalView({ tab, active, focused }:
     const f = fit.current;
     const t = term.current;
     if (!el || !f || !t || el.clientWidth < 40 || el.clientHeight < 40 || !t.element) return;
+    if (tabRef.current.kind === "joined") return fitShared(t, el);
     try {
       f.fit();
     } catch {
       return;
     }
     announceSize();
+  }
+
+  // A joined pane shows the session at its own size: the grid is that size, and the font is
+  // made smaller when that is what it takes to fit the pane (never larger than usual).
+  function fitShared(t: XTerm, el: HTMLElement) {
+    const size = sharedRef.current;
+    if (!size) return;
+    if (t.cols !== size.cols || t.rows !== size.rows) {
+      try {
+        t.resize(size.cols, size.rows);
+      } catch {
+        return;
+      }
+    }
+    const cell = (t as unknown as { _core?: { _renderService?: { dimensions?: { css?: { cell?: { width: number; height: number } } } } } })._core?._renderService?.dimensions?.css?.cell;
+    if (!cell?.width || !cell.height) return;
+    const cur = t.options.fontSize ?? termFontSize(getState().zoom);
+    const scale = Math.min(el.clientWidth / (size.cols * cell.width), el.clientHeight / (size.rows * cell.height));
+    const want = Math.max(7, Math.min(termFontSize(getState().zoom), Math.floor(cur * scale * 4) / 4));
+    if (Math.abs(want - cur) >= 0.25) {
+      // The font takes a step or two to settle (cells don't scale exactly with it). The GPU
+      // renderer is let go meanwhile and made once it has: making it again at every step
+      // left the screen blank.
+      releaseGPU();
+      t.options.fontSize = want;
+      cancelAnimationFrame(settling.current);
+      settling.current = requestAnimationFrame(() => {
+        settling.current = 0;
+        safeFit();
+      });
+      return;
+    }
+    if (activeRef.current && !gl.current && !settling.current) {
+      setGPU(true);
+      t.clearTextureAtlas();
+      t.refresh(0, t.rows - 1);
+    }
   }
 
   // The grid a pane in a background tab will have when it is shown, worked out from its place
@@ -721,11 +818,12 @@ export const TerminalView = memo(function TerminalView({ tab, active, focused }:
     sizeTimer.current = window.setTimeout(() => {
       const t = term.current;
       const s = ws.current;
-      if (!t || s?.readyState !== WebSocket.OPEN) return;
+      if (!t || s?.readyState !== WebSocket.OPEN || tabRef.current.kind === "joined") return;
       const size = `${t.cols}x${t.rows}`;
       if (size === sentSize.current) return;
       sentSize.current = size;
       s.send(JSON.stringify({ type: "resize", cols: t.cols, rows: t.rows }));
+      presenceOf(tabRef.current.key)?.resized();
       if (import.meta.env.DEV) devSizes(tabRef.current.key).push(size); // dev checks count these
     }, 70);
   }
@@ -735,6 +833,34 @@ export const TerminalView = memo(function TerminalView({ tab, active, focused }:
     if (tb.termId || opening.current || holdsOff(tb.key)) return; // a session moving: it attaches once it is there
     opening.current = true;
     const t = term.current!;
+    if (tb.kind === "joined") {
+      try {
+        const j = await joinOf(tb);
+        // The screen is the session's size before tmux draws on it: drawn at another size, what
+        // it draws first is lost.
+        if (j.share.cols > 0 && j.share.rows > 0) {
+          joinSize.current = { cols: j.share.cols, rows: j.share.rows };
+          sharedRef.current ??= joinSize.current;
+          if (activeRef.current) safeFit();
+          else t.resize(j.share.cols, j.share.rows);
+        }
+        updateTab(tb.key, {
+          termId: `collab:${j.id}`,
+          url: `${j.term}&c=${encodeURIComponent(clientId(tb.key))}`,
+          exited: false,
+          error: undefined,
+          join: { ...tb.join!, id: j.id, title: j.share.info.title || j.share.title, by: j.share.by.name, role: j.share.role },
+        });
+      } catch (e) {
+        const why = errText(e);
+        // Stopped, removed or a link that doesn't work: the end of it. Unreachable: keep trying.
+        if (/isn't shared|removed|doesn't work|isn't a Lungo|cut short/.test(why)) updateTab(tb.key, { error: why, retry: undefined });
+        else dropTab(tb.key, why);
+      } finally {
+        opening.current = false;
+      }
+      return;
+    }
     try {
       const dir = tb.spawn?.dir ?? "";
       const claude = !!tb.spawn?.claude;
@@ -781,7 +907,7 @@ export const TerminalView = memo(function TerminalView({ tab, active, focused }:
     let attempts = 0;
     let retry: number | undefined;
     const key = tabRef.current.key;
-    const tmux = persistent(tabRef.current);
+    const tmux = persistent(tabRef.current) || tabRef.current.kind === "joined";
     // A session pane shows nothing of the connection being made (ssh's chatter, a failed
     // try): what was on screen stays until tmux takes over, then the session is drawn afresh.
     let attached = !tmux;
@@ -807,6 +933,18 @@ export const TerminalView = memo(function TerminalView({ tab, active, focused }:
     const finished = (code: number) => {
       window.clearTimeout(holdTimer);
       const cur = tabRef.current;
+      if (cur.kind === "joined") {
+        // The share stopped (its presence says so a moment later), the session ended, or the
+        // computer sharing it went away for now (the pane joins again).
+        const text = plainText(tail);
+        window.setTimeout(() => {
+          const now = getState().tabs.find((x) => x.key === cur.key);
+          if (!now || now.error || now.url !== cur.url) return;
+          if (/\[(gone|exited)\]/.test(text.slice(-300))) updateTab(cur.key, { error: "The session ended.", termId: undefined, url: undefined });
+          else dropTab(cur.key);
+        }, 500);
+        return;
+      }
       if (!persistent(cur)) {
         // A plain shell: leaving it closes the pane, like any terminal.
         if (code === 0) closeTab(cur.key);
@@ -916,7 +1054,7 @@ export const TerminalView = memo(function TerminalView({ tab, active, focused }:
         if (++attempts > 20) {
           // It keeps dropping: the pane says so rather than look connected while frozen.
           const cur = tabRef.current;
-          if (persistent(cur)) dropTab(cur.key, "The connection kept dropping");
+          if (persistent(cur) || cur.kind === "joined") dropTab(cur.key, "The connection kept dropping");
           else updateTab(cur.key, { exited: true });
           return;
         }
@@ -980,7 +1118,7 @@ export const TerminalView = memo(function TerminalView({ tab, active, focused }:
   const layoutHere = useStore((s) => groupOf(tab.key, s)?.layout);
   const sidebarShown = useStore((s) => s.sidebar);
   useEffect(() => {
-    if (active) return;
+    if (active || tab.kind === "joined") return;
     const fitHidden = () => {
       const t = term.current;
       if (!t || activeRef.current) return;
@@ -1065,7 +1203,32 @@ export const TerminalView = memo(function TerminalView({ tab, active, focused }:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
 
-  const where = machineLabel(tab.kind === "local" ? LOCAL : tab.machine);
+  // The pane's presence in its share: connected while the session is shared (or joined), so
+  // the others see this pane's pointer and selection, and it sees theirs.
+  useEffect(() => {
+    let off = false;
+    presenceURL(tabRef.current, share).then(
+      (url) => !off && linkPresence(tabRef.current.key, url, joined),
+      () => {},
+    );
+    return () => {
+      off = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [share?.id, tab.url, tab.error]); // a joined pane's address is known once it has joined
+  useEffect(() => () => linkPresence(tab.key, null, false), [tab.key]);
+
+  // The session's size changed (or became known): a joined pane is drawn at it.
+  useEffect(() => {
+    if (joined && activeRef.current) safeFit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sharedSize?.cols, sharedSize?.rows]);
+  // Watching only: the keyboard has nothing to do in it.
+  useEffect(() => {
+    if (term.current) term.current.options.disableStdin = joined && viewOnly;
+  }, [joined, viewOnly]);
+
+  const where = joined ? `${firstName(tab.join?.by)}'s session` : machineLabel(tab.kind === "local" ? LOCAL : tab.machine);
   const waiting = !tab.url && !tab.error; // no terminal behind the pane right now
   const quiet = waiting && seen && !late; // just reconnecting, or just opened from its last screen: no notice yet
   const why = shortWhy(tab.retry?.why);
@@ -1073,7 +1236,15 @@ export const TerminalView = memo(function TerminalView({ tab, active, focused }:
   const move = useMoving(tab.key); // the session is on its way to another device: that says so instead
   return (
     <div className="absolute inset-0" style={{ background: "var(--term-bg)" }}>
-      <div ref={host} onContextMenu={terminalMenu} className={cx("term-host absolute inset-0 transition-opacity duration-300", move ? "opacity-30" : waiting && seen && !quiet && "opacity-50")} />
+      <div
+        ref={host}
+        onContextMenu={terminalMenu}
+        onMouseMove={pointerMoved}
+        onMouseDownCapture={pointerDown}
+        onMouseLeave={() => presenceOf(tab.key)?.pointer(null)}
+        className={cx("term-host absolute inset-0 transition-opacity duration-300", move ? "opacity-30" : waiting && seen && !quiet && "opacity-50")}
+      />
+      {(share || joined) && <PresenceLayer tabKey={tab.key} />}
       {move && <MoveOverlay move={move} />}
       {waiting && !seen && !move && (
         <div className="z absolute inset-0 flex flex-col items-center justify-center gap-2 text-[12.5px] text-subtle">
@@ -1116,9 +1287,12 @@ export const TerminalView = memo(function TerminalView({ tab, active, focused }:
         <div className="z anim-fade absolute inset-x-0 bottom-0 z-20 flex items-center gap-3 border-t border-line bg-[color-mix(in_srgb,var(--raised)_92%,transparent)] px-4 py-2.5 backdrop-blur">
           <Unplug size={15} className="text-subtle" />
           <div className="min-w-0 flex-1 text-[12.5px]">{tab.error ? <span className="text-bad">{tab.error}</span> : <span className="text-muted">The shell ended.</span>}</div>
-          <Button size="xs" variant="outline" icon={<RotateCcw size={12} />} onClick={() => reattachTab(tab.key)}>
-            {persistent(tab) ? "Try again" : "New shell"}
-          </Button>
+          {/* A joined pane that ended is over: the share stopped, you were removed, the session ended. */}
+          {!(joined && tab.error) && (
+            <Button size="xs" variant="outline" icon={<RotateCcw size={12} />} onClick={() => reattachTab(tab.key)}>
+              {persistent(tab) ? "Try again" : "New shell"}
+            </Button>
+          )}
           <Button size="xs" variant="ghost" icon={<X size={12} />} onClick={() => closeTab(tab.key)}>
             Close
           </Button>

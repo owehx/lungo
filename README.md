@@ -225,6 +225,36 @@ home folder (`~/Documents/codes/krypton` stays `~/Documents/codes/krypton`). Lef
 The folder stays where it was too; "Pick up on …" opens Claude there in the latest
 conversation.
 
+### Working on a session together
+
+Any session (on this Mac or a machine) can be shared with people on your tailnet, the way a
+document is. One click on the people icon in a pane's title bar (or the top bar) shares it,
+copies its link (`lungo://join/7KX-4PQ`) and shows its code, `7KX-4PQ`, to read out; the
+panel switches between a code to type along and one to watch. They click the link, or press
+`⇧⌘J` in their Lungo and type the code (or paste it in `⌘K`), and the session opens in a tab
+of theirs, live:
+
+- **The same screen:** everyone sees it at the size of your pane (theirs shrinks the font to
+  fit), so a cell is the same cell for everyone.
+- **Pointers, clicks and selections:** each person's pointer shows on the others' screens as
+  an arrowhead in their colour, with their name while it moves; their clicks land as a ring,
+  what they select shows in their colour, and whoever is typing has their name at the cursor.
+  Click someone's face (on the pane, or in its panel) to see where they are.
+- **Ports:** what the session listens on (a dev server) opens on each guest's own
+  `localhost`, on the same number when it is free there. Only the session's ports: nothing
+  else on your computer is reachable.
+- **Who is in it:** their faces on the pane and on its row in the sidebar. The panel makes
+  anyone watch-only or lets them type, removes them (their link stops working for them),
+  or stops sharing (every link stops working, everyone is seen out).
+
+Nothing is hosted anywhere. Your Lungo serves the session on your tailnet address only
+(port 47863), Tailscale carries it and says who is on the other end, and the code decides
+who gets in: their Lungo asks the computers on your tailnet which one shares it (yours
+answers; a computer turns away guesses after a few wrong codes a minute). People on another
+tailnet need your computer shared with them in Tailscale first. A code that lets people
+type gives them your session as you: send it to the people you mean, and stop sharing to
+end it.
+
 ### A machine's screen
 
 A Mac machine's screen shows live in the app, and you can use it from there: `⇧⌘S` for the

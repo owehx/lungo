@@ -48,11 +48,12 @@ type App struct {
 
 	poll  *poller
 	win   *window
+	share *sharing      // sessions shared with people on the tailnet, and joined (collab.go)
 	ready chan struct{} // closed when startup has finished
 }
 
 func NewApp() *App {
-	return &App{eng: engine.New(), watches: map[string]context.CancelFunc{}, win: newWindow(), ready: make(chan struct{})}
+	return &App{eng: engine.New(), watches: map[string]context.CancelFunc{}, win: newWindow(), share: newSharing(), ready: make(chan struct{})}
 }
 
 // startup runs alongside the page loading, not before it (Wails starts both at once), so the
@@ -72,6 +73,7 @@ func (a *App) startup(ctx context.Context) {
 			wruntime.EventsEmit(ctx, "term:exit", map[string]any{"id": id, "code": code})
 		}
 	}
+	a.startSharing()
 	defer close(a.ready)
 	if os.Getenv("SKY_HEADLESS") != "" {
 		backgroundApp()
@@ -101,6 +103,7 @@ func (a *App) domReady(ctx context.Context) {
 	go a.win.reopen()
 	go a.updateLoop(ctx)
 	go a.watchPrefs(ctx)
+	a.runSharing()
 	go a.win.watchAsks(func(verb, machine, session string) {
 		wruntime.EventsEmit(ctx, "window-ask", map[string]string{"verb": verb, "machine": machine, "session": session})
 	})
@@ -112,6 +115,7 @@ func (a *App) shutdown(context.Context) {
 	if a.terms != nil {
 		a.terms.CloseAll()
 	}
+	a.stopSharing()
 	a.eng.CloseAllTunnels()
 	a.watchMu.Lock()
 	for _, stop := range a.watches {

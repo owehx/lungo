@@ -22,6 +22,7 @@ type Status struct {
 	TUN            bool   `json:"TUN"` // false = userspace networking: the OS can't reach 100.x directly
 	Self           *Node  `json:"Self"`
 	Peer           map[string]*Node
+	User           map[string]*UserProfile // by user ID (in decimal)
 	CurrentTailnet *struct {
 		Name           string `json:"Name"`
 		MagicDNSSuffix string `json:"MagicDNSSuffix"`
@@ -35,6 +36,14 @@ type Node struct {
 	TailscaleIPs []string `json:"TailscaleIPs"`
 	Online       bool     `json:"Online"`
 	OS           string   `json:"OS"`
+	UserID       int64    `json:"UserID"`
+}
+
+// UserProfile is a person on the tailnet.
+type UserProfile struct {
+	LoginName     string `json:"LoginName"`
+	DisplayName   string `json:"DisplayName"`
+	ProfilePicURL string `json:"ProfilePicURL"`
 }
 
 // IPv4 returns the node's 100.x address.

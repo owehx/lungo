@@ -4,6 +4,7 @@ import {engine} from '../models';
 import {main} from '../models';
 import {model} from '../models';
 import {syncer} from '../models';
+import {collab} from '../models';
 import {term} from '../models';
 import {folders} from '../models';
 
@@ -37,15 +38,15 @@ export function ClaudeAccounts():Promise<Array<engine.ClaudeAccountView>>;
 
 export function ClaudeAutoSwitch():Promise<boolean>;
 
+export function ClaudeLocalLogin():Promise<engine.LocalLogin>;
+
 export function ClaudeMoveSessions():Promise<boolean>;
 
 export function ClaudePreciseScroll():Promise<boolean>;
 
-export function ClaudeStatus():Promise<main.ClaudeStatus>;
-
-export function ClaudeLocalLogin():Promise<engine.LocalLogin>;
-
 export function ClaudeSource():Promise<string>;
+
+export function ClaudeStatus():Promise<main.ClaudeStatus>;
 
 export function ClaudeStrategy():Promise<string>;
 
@@ -58,6 +59,8 @@ export function CloseShell(arg1:string,arg2:string):Promise<void>;
 export function CloseTerminal(arg1:string):Promise<void>;
 
 export function CloseTunnel(arg1:string):Promise<void>;
+
+export function CollabLocal():Promise<main.CollabLocal>;
 
 export function Connect(arg1:string):Promise<void>;
 
@@ -79,6 +82,8 @@ export function FindFile(arg1:string,arg2:string,arg3:string,arg4:string):Promis
 
 export function FocusSession(arg1:string,arg2:string):Promise<boolean>;
 
+export function ForwardSharedPort(arg1:string,arg2:number):Promise<string>;
+
 export function GrowDisk(arg1:string,arg2:number):Promise<string>;
 
 export function History(arg1:string):Promise<main.HistoryView>;
@@ -87,11 +92,15 @@ export function Info():Promise<main.AppInfo>;
 
 export function InstallTmux():Promise<string>;
 
+export function JoinShare(arg1:string):Promise<collab.JoinInfo>;
+
 export function JoinTailscale(arg1:string):Promise<string>;
 
 export function KillSession(arg1:string,arg2:string):Promise<void>;
 
 export function LastSyncAll():Promise<Record<string, syncer.Result>>;
+
+export function LeaveShare(arg1:string):Promise<void>;
 
 export function Links():Promise<Array<model.Link>>;
 
@@ -112,6 +121,8 @@ export function MintClaudeToken():Promise<string>;
 export function MoveClaudeAccount(arg1:string,arg2:number):Promise<void>;
 
 export function MoveFolder(arg1:string,arg2:string,arg3:string):Promise<string>;
+
+export function MoveSession(arg1:string,arg2:string,arg3:string,arg4:string):Promise<string>;
 
 export function NewSession(arg1:string,arg2:engine.SessionOptions):Promise<engine.Session>;
 
@@ -150,6 +161,8 @@ export function PaneGit(arg1:string,arg2:string):Promise<engine.GitInfo>;
 export function PaneIntent(arg1:string):Promise<boolean>;
 
 export function PeekFile(arg1:string,arg2:engine.RemoteFile):Promise<main.PeekView>;
+
+export function PendingLink():Promise<string>;
 
 export function PickFile(arg1:string):Promise<string>;
 
@@ -190,6 +203,8 @@ export function RefreshMachines():Promise<Array<main.MachineView>>;
 export function RemoveAPIKey(arg1:string):Promise<string>;
 
 export function RemoveClaudeAccount(arg1:string):Promise<void>;
+
+export function RemoveFromShare(arg1:string,arg2:string):Promise<void>;
 
 export function RemoveLink(arg1:string):Promise<void>;
 
@@ -261,15 +276,25 @@ export function SetOpenAtLogin(arg1:boolean):Promise<void>;
 
 export function SetPrefs(arg1:Record<string, string>):Promise<void>;
 
+export function SetShareRole(arg1:string,arg2:string,arg3:boolean):Promise<void>;
+
 export function SetSyncItems(arg1:string,arg2:Array<string>):Promise<void>;
 
 export function SetTailscaleAuthKey(arg1:string):Promise<void>;
 
 export function Settings():Promise<main.SettingsView>;
 
+export function ShareSession(arg1:string,arg2:string,arg3:string):Promise<main.ShareView>;
+
+export function SharedPorts(arg1:string):Promise<Record<number, string>>;
+
+export function Shares():Promise<Array<main.ShareView>>;
+
 export function StartMachine(arg1:string):Promise<string>;
 
 export function StopMachine(arg1:string):Promise<string>;
+
+export function StopSharing(arg1:string):Promise<void>;
 
 export function SyncMachines(arg1:Array<string>,arg2:Array<string>):Promise<string>;
 

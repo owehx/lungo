@@ -78,6 +78,124 @@ export namespace claudeacct {
 
 }
 
+export namespace collab {
+	
+	export class SessionInfo {
+	    title?: string;
+	    where?: string;
+	    folder?: string;
+	    branch?: string;
+	    agent?: string;
+	    state?: string;
+	    gone?: boolean;
+	    mouse?: boolean;
+	    alt?: boolean;
+	    scrollKey?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new SessionInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.title = source["title"];
+	        this.where = source["where"];
+	        this.folder = source["folder"];
+	        this.branch = source["branch"];
+	        this.agent = source["agent"];
+	        this.state = source["state"];
+	        this.gone = source["gone"];
+	        this.mouse = source["mouse"];
+	        this.alt = source["alt"];
+	        this.scrollKey = source["scrollKey"];
+	    }
+	}
+	export class ShareInfo {
+	    id: string;
+	    title: string;
+	    by: tailnet.Person;
+	    role: string;
+	    code?: string;
+	    info: SessionInfo;
+	    cols: number;
+	    rows: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ShareInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.title = source["title"];
+	        this.by = this.convertValues(source["by"], tailnet.Person);
+	        this.role = source["role"];
+	        this.code = source["code"];
+	        this.info = this.convertValues(source["info"], SessionInfo);
+	        this.cols = source["cols"];
+	        this.rows = source["rows"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class JoinInfo {
+	    id: string;
+	    link: string;
+	    share: ShareInfo;
+	    term: string;
+	    presence: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new JoinInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.link = source["link"];
+	        this.share = this.convertValues(source["share"], ShareInfo);
+	        this.term = source["term"];
+	        this.presence = source["presence"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+
+}
+
 export namespace engine {
 	
 	export class APIKeyView {
@@ -556,8 +674,26 @@ export namespace engine {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.email = source["email"];
 	        this.accountId = source["accountId"];
-	        this.changedAt = source["changedAt"];
+	        this.changedAt = this.convertValues(source["changedAt"], null);
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class MovePlan {
 	    from: string;
@@ -1144,6 +1280,20 @@ export namespace main {
 	        this.hasToken = source["hasToken"];
 	    }
 	}
+	export class CollabLocal {
+	    watch: string;
+	    presence: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CollabLocal(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.watch = source["watch"];
+	        this.presence = source["presence"];
+	    }
+	}
 	export class FilesView {
 	    dir: string;
 	    files: engine.RemoteFile[];
@@ -1572,6 +1722,32 @@ export namespace main {
 	        this.skipMCP = source["skipMCP"];
 	    }
 	}
+	export class ShareView {
+	    id: string;
+	    machine: string;
+	    session: string;
+	    title: string;
+	    editCode: string;
+	    viewCode: string;
+	    editLink: string;
+	    viewLink: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ShareView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.machine = source["machine"];
+	        this.session = source["session"];
+	        this.title = source["title"];
+	        this.editCode = source["editCode"];
+	        this.viewCode = source["viewCode"];
+	        this.editLink = source["editLink"];
+	        this.viewLink = source["viewLink"];
+	    }
+	}
 	export class UpdateInfo {
 	    current: string;
 	    latest?: string;
@@ -1997,6 +2173,29 @@ export namespace syncer {
 	        this.id = source["id"];
 	        this.label = source["label"];
 	        this.description = source["description"];
+	    }
+	}
+
+}
+
+export namespace tailnet {
+	
+	export class Person {
+	    login?: string;
+	    name: string;
+	    device?: string;
+	    avatar?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Person(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.login = source["login"];
+	        this.name = source["name"];
+	        this.device = source["device"];
+	        this.avatar = source["avatar"];
 	    }
 	}
 

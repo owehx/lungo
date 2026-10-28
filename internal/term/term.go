@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,13 @@ import (
 
 // replayLimit is how much recent output a reconnecting tab gets back.
 const replayLimit = 512 * 1024
+
+// staleQueries are what a program asked the terminal when it drew that output: what it is
+// (tmux asks on attach), its colours, where the cursor is. Replayed to a tab that connects
+// again, they would be answered again, long after the program stopped waiting, and the
+// answers would arrive in it as keys typed (^[[?1;2c in a shell). The replay is for drawing
+// only, so they are left out of it.
+var staleQueries = regexp.MustCompile(`\x1b\[[>=]?0?c|\x1b\[\??[56]n|\x1b\[>0?q|\x1b\[\?u|\x1b\[\?[0-9]+\$p|\x1b\[1[468]t|\x1b\](1[0-2]|4;[0-9]+);\?(\x07|\x1b\\)|\x1bP[$+]q[^\x1b]*\x1b\\`)
 
 // Info describes a running terminal.
 type Info struct {
@@ -50,6 +58,12 @@ type Spec struct {
 	Title string
 	Cols  int
 	Rows  int
+	// Fixed: the size is set with Resize alone; what clients ask for is ignored. Someone a
+	// session is shared with sees it at the session's own size.
+	Fixed bool
+	// Input sees what a client types before the program gets it; false drops it (someone who
+	// may only watch).
+	Input func([]byte) bool
 }
 
 // proc is the platform PTY: a reader/writer plus resize and wait.
@@ -64,8 +78,10 @@ type proc interface {
 
 // Terminal is one running pseudo-terminal.
 type Terminal struct {
-	info Info
-	p    proc
+	info  Info
+	p     proc
+	fixed bool
+	input func([]byte) bool
 
 	mu       sync.Mutex
 	replay   []byte
@@ -87,6 +103,7 @@ type Manager struct {
 	token  string
 	addr   string
 	srv    *http.Server
+	mux    *http.ServeMux
 	OnExit func(id string, code int)
 
 	files map[string]string // files the page may load (a preview): unguessable ID → path
@@ -110,10 +127,28 @@ func NewManager() (*Manager, error) {
 	mux.HandleFunc("/term/", m.serve)
 	mux.HandleFunc("/file/", m.serveFile)
 	mux.HandleFunc("/pipe/", m.servePipe)
+	m.mux = mux
 	m.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go m.srv.Serve(ln)
 	go m.janitor()
 	return m, nil
+}
+
+// Mount serves more of the page's connections under prefix (it ends in "/"), behind the same
+// token as the terminals.
+func (m *Manager) Mount(prefix string, h http.Handler) {
+	m.mux.Handle(prefix, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("token")), []byte(m.token)) != 1 {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		h.ServeHTTP(w, r)
+	}))
+}
+
+// URL is the page's address for path on this server (a WebSocket), token included.
+func (m *Manager) URL(path string) string {
+	return fmt.Sprintf("ws://%s%s?token=%s", m.addr, path, m.token)
 }
 
 // ShareFile lets the page load one file from this computer (to preview it) and returns the
@@ -311,6 +346,8 @@ func (m *Manager) Start(s Spec) (Info, error) {
 	t := &Terminal{
 		info:     Info{ID: id, Title: s.Title, Started: time.Now()},
 		p:        p,
+		fixed:    s.Fixed,
+		input:    s.Input,
 		clients:  map[*websocket.Conn]chan []byte{},
 		lastSeen: time.Now(),
 		done:     make(chan struct{}),
@@ -461,7 +498,13 @@ func (m *Manager) serve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	id := strings.TrimPrefix(r.URL.Path, "/term/")
+	m.ServeTerminal(w, r, strings.TrimPrefix(r.URL.Path, "/term/"))
+}
+
+// ServeTerminal connects a WebSocket to a terminal. The caller has checked who is asking
+// (the page's own connections carry the token; a shared session's guests are let in by the
+// share).
+func (m *Manager) ServeTerminal(w http.ResponseWriter, r *http.Request, id string) {
 	m.mu.Lock()
 	t := m.terms[id]
 	m.mu.Unlock()
@@ -481,7 +524,7 @@ func (m *Manager) serve(w http.ResponseWriter, r *http.Request) {
 
 	out := make(chan []byte, 1024)
 	t.mu.Lock()
-	replay := append([]byte(nil), t.replay...)
+	replay := staleQueries.ReplaceAll(t.replay, nil)
 	t.clients[c] = out
 	exited, code := t.info.Exited, t.info.Code
 	t.mu.Unlock()
@@ -546,6 +589,9 @@ func (m *Manager) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if typ == websocket.MessageBinary {
+			if t.input != nil && !t.input(data) {
+				continue
+			}
 			if _, err := t.p.Write(data); err != nil {
 				return
 			}
@@ -557,11 +603,13 @@ func (m *Manager) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		switch msg.Type {
 		case "resize":
-			if msg.Cols > 0 && msg.Rows > 0 {
+			if msg.Cols > 0 && msg.Rows > 0 && !t.fixed {
 				t.p.Resize(msg.Cols, msg.Rows)
 			}
 		case "input":
-			t.p.Write([]byte(msg.Data))
+			if t.input == nil || t.input([]byte(msg.Data)) {
+				t.p.Write([]byte(msg.Data))
+			}
 		}
 	}
 }

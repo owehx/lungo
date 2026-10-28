@@ -39,12 +39,14 @@ import { dragSizes, isLeaf, node, type Divider, type Rect } from "../lib/panes";
 import { agentOf, cx, hasAgent, mod } from "../lib/util";
 import { TerminalView } from "./Terminal";
 import { MoveButton } from "./MoveButton";
+import { JoinedButton, JoinedFooter, JoinedIcon, ShareButton } from "./Share";
 import { Menu } from "./ui";
 import { AgentIcon, BrandIcon, LocalIcon, ProviderIcon, SessionIcon } from "./Brand";
 
 /** The icon for what a pane shows: Claude's logo (with its state) wherever Claude runs. */
 export function PaneIcon({ tab, session, size = 13 }: { tab: Tab; session?: Session; size?: number }) {
   const machine = useStore((s) => s.machines.find((m) => m.machine.name === tab.machine)?.machine);
+  if (tab.kind === "joined") return <JoinedIcon tab={tab} size={size} />;
   if (tab.kind === "session" || hasAgent(session)) return <SessionIcon s={session ?? ({ claude: !!tab.claude, agent: tab.agent } as Session)} size={size} />;
   if (tab.claude) return <BrandIcon name="claude" size={size} title="Claude" />;
   if (tab.agent) return <AgentIcon agent={tab.agent} size={size} />;
@@ -79,7 +81,7 @@ export const PaneFrame = memo(
         <div className="relative min-h-0 flex-1">
           <TerminalView tab={tab} active={shown} focused={focused && shown} />
         </div>
-        {footer && <PaneFooter tab={tab} />}
+        {footer && (tab.kind === "joined" ? <JoinedFooter tab={tab} height={PANE_FOOTER} /> : <PaneFooter tab={tab} />)}
       </div>
     );
   },
@@ -115,6 +117,8 @@ function PaneHeader({ tab, focused, session }: { tab: Tab; focused: boolean; ses
           </span>
         )}
       </span>
+      <ShareButton tab={tab} session={session} />
+      <JoinedButton tab={tab} />
       <MoveButton tab={tab} session={session} />
       <PaneMenu tab={tab} />
       <button

@@ -114,3 +114,40 @@ func TestIsClaude(t *testing.T) {
 		}
 	}
 }
+
+func TestReplayLeavesOutQueries(t *testing.T) {
+	m, err := NewManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.CloseAll()
+	// What tmux does on attach: the alternate screen, then questions about the terminal.
+	info, err := m.Start(Spec{Args: []string{"/bin/sh", "-c", `printf '\033[?1049hhello\033[c\033[>c\033[>q\033]11;?\033\\\033[6n\033[1mbold\033[0m\033[?2026$p done'; sleep 5`}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	read := func() string {
+		c, _, err := websocket.Dial(ctx, info.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.CloseNow()
+		var out strings.Builder
+		for !strings.Contains(out.String(), "done") {
+			typ, data, err := c.Read(ctx)
+			if err != nil {
+				t.Fatalf("read: %v (out so far %q)", err, out.String())
+			}
+			if typ == websocket.MessageBinary {
+				out.Write(data)
+			}
+		}
+		return out.String()
+	}
+	read() // the first tab: it was asked, and answered
+	if got, want := read(), "\x1b[?1049hhello\x1b[1mbold\x1b[0m done"; got != want {
+		t.Fatalf("replayed %q, want %q", got, want)
+	}
+}
