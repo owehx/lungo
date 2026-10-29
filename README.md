@@ -228,11 +228,11 @@ conversation.
 ### Working on a session together
 
 Any session (on this Mac or a machine) can be shared with people on your tailnet, the way a
-document is. One click on the people icon in a pane's title bar (or the top bar) shares it,
-copies its link (`lungo://join/7KX-4PQ`) and shows its code, `7KX-4PQ`, to read out; the
-panel switches between a code to type along and one to watch. They click the link, or press
-`⇧⌘J` in their Lungo and type the code (or paste it in `⌘K`), and the session opens in a tab
-of theirs, live:
+document is. The people icon in a pane's title bar (or the top bar) opens a panel: **Share**
+copies the session's link (`lungo://join/7KX-4PQ`) and shows its code, `7KX-4PQ`, to read
+out (one code to type along, one to watch), and under it is a box to type someone else's
+code. They click the link, or type the code there (or after `⇧⌘J`, the join button at the
+top of the sidebar, or in `⌘K`), and the session opens in a tab of theirs, live:
 
 - **The same screen:** everyone sees it at the size of your pane (theirs shrinks the font to
   fit), so a cell is the same cell for everyone.

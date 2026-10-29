@@ -2,9 +2,10 @@
 // panel for a session someone shared with you. See lib/collab.
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Check, Eye, Globe, Keyboard, Link2, LocateFixed, LogOut, UserPlus, Users, X } from "lucide-react";
+import { Check, Eye, Globe, Keyboard, Link2, LocateFixed, LogIn, LogOut, UserPlus, Users, X } from "lucide-react";
 import {
   CODE_CHARS,
+  askJoin,
   closeJoin,
   collabApi,
   copyLink,
@@ -285,6 +286,15 @@ function SharePanel({ tab, view, fresh, anchor, onClose }: { tab: Tab; view: Sha
       )}
       <Sep />
       <Row
+        icon={<LogIn size={13} />}
+        label="Join someone else's session…"
+        hint={`⇧${mod}J`}
+        onClick={() => {
+          onClose();
+          void askJoin();
+        }}
+      />
+      <Row
         icon={<X size={13} />}
         label="Stop sharing"
         danger
@@ -297,11 +307,48 @@ function SharePanel({ tab, view, fresh, anchor, onClose }: { tab: Tab; view: Sha
   );
 }
 
+/** The panel of a pane whose session isn't shared: share it (a link and a code), or join
+ *  someone else's with the code they gave you. */
+function OfferPanel({ tab, anchor, onClose, onShared }: { tab: Tab; anchor: DOMRect; onClose: () => void; onShared: (v: ShareView) => void }) {
+  const [busy, setBusy] = useState(false);
+  const entry = useCodeEntry({ idle: <span className="text-subtle">Someone gave you a code? Type it in.</span>, onJoined: onClose });
+  const share = async () => {
+    setBusy(true);
+    const v = await shareOf(tab, paneTitle(tab));
+    setBusy(false);
+    if (!v) return;
+    await copyLink(v, "edit").catch(() => {});
+    onShared(v);
+  };
+  return (
+    <Popover anchor={anchor} onClose={onClose} width={308}>
+      <div className="px-2 pt-1.5 pb-2">
+        <div className="text-[12.5px] font-medium text-fg">Share this session</div>
+        <div className="mt-0.5 text-[11.5px] leading-snug text-subtle">You get a link and a code. Whoever has it sees this screen, points at it, types in it and opens its ports.</div>
+      </div>
+      <div className="px-1">
+        <Button variant="primary" className="w-full" loading={busy} icon={<UserPlus size={13} />} onClick={() => void share()}>
+          Share and copy link
+        </Button>
+      </div>
+      <div className="mt-3 mb-2.5 flex items-center gap-2 px-2 text-[11px] text-subtle">
+        <span className="h-px flex-1 bg-line" />
+        or join someone else's
+        <span className="h-px flex-1 bg-line" />
+      </div>
+      <div className="flex flex-col items-center px-2 pb-2">
+        {entry.field}
+        <div className="mt-2 flex min-h-[30px] max-w-[272px] items-start justify-center text-center text-[11.5px] leading-snug">{entry.status}</div>
+      </div>
+    </Popover>
+  );
+}
+
 /** The share button on a pane whose session can be shared (it runs in tmux, here or on a
- *  machine). One click shares it, copies its link and shows its code. */
+ *  machine): share it and see its code, or join someone else's with theirs. */
 export function ShareButton({ tab, session, className }: { tab: Tab; session?: Session; className?: string }) {
   const share = useShareOf(tab);
-  const [open, setOpen] = useState<{ anchor: DOMRect; view: ShareView; fresh: boolean } | null>(null);
+  const [open, setOpen] = useState<{ anchor: DOMRect; view?: ShareView; fresh?: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   if (tab.kind === "joined" || !persistent(tab)) return null;
   void session;
@@ -311,26 +358,29 @@ export function ShareButton({ tab, session, className }: { tab: Tab; session?: S
     if (open) return setOpen(null);
     if (busy) return;
     const anchor = e.currentTarget.getBoundingClientRect();
-    const fresh = !share;
+    if (!share) return setOpen({ anchor });
     setBusy(true);
-    const view = await shareOf(tab, paneTitle(tab));
+    const view = await shareOf(tab, paneTitle(tab)); // its codes
     setBusy(false);
-    if (!view) return;
-    if (fresh) await copyLink(view, "edit").catch(() => {});
-    setOpen({ anchor, view, fresh });
+    if (view) setOpen({ anchor, view });
   };
   return (
     <>
       {guests.length > 0 && <Faces tab={tab} people={guests} />}
       <button
-        title={share ? (guests.length ? `With ${guests.map((m) => firstName(m.name)).join(", ")}: the code, who may type` : "Shared on your tailnet: the code and link") : "Share this session: a link and a code for people on your tailnet"}
+        title={share ? (guests.length ? `With ${guests.map((m) => firstName(m.name)).join(", ")}: the code, who may type` : "Shared on your tailnet: the code and link") : "Share this session, or join someone's with a code"}
         onClick={(e) => void click(e)}
         onMouseDown={(e) => e.stopPropagation()} // not the start of dragging the pane
         className={cx("flex items-center justify-center rounded text-subtle transition-colors hover:bg-active hover:text-fg", share && "text-accent", className ?? "size-5")}
       >
         {busy ? <Spinner size={12} /> : share ? <Users size={13} /> : <UserPlus size={13} />}
       </button>
-      {open && <SharePanel tab={tab} view={open.view} fresh={open.fresh} anchor={open.anchor} onClose={() => setOpen(null)} />}
+      {open &&
+        (open.view ? (
+          <SharePanel tab={tab} view={open.view} fresh={!!open.fresh} anchor={open.anchor} onClose={() => setOpen(null)} />
+        ) : (
+          <OfferPanel tab={tab} anchor={open.anchor} onClose={() => setOpen(null)} onShared={(view) => setOpen({ anchor: open.anchor, view, fresh: true })} />
+        ))}
     </>
   );
 }
@@ -461,15 +511,16 @@ export function JoinHost() {
 
 const sentence = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) + (/[.!?]$/.test(s) ? "" : ".") : s);
 
-/** Type the code they gave you (it joins as the sixth character goes in), or paste their link. */
-function JoinBox({ ask }: { ask: JoinAsk }) {
-  const first = readInvite(ask.value);
+/** Typing a code (it joins as the sixth character goes in) or pasting a link, and joining:
+ *  the tiles to type in (field), a line saying what is happening (status), and join (go). */
+function useCodeEntry({ value = "", now = false, clip = false, idle, onJoined }: { value?: string; now?: boolean; clip?: boolean; idle: ReactNode; onJoined: () => void }) {
+  const first = readInvite(value);
   const [code, setCode] = useState(first.code ?? "");
   const [link, setLink] = useState(first.link ?? ""); // a whole link: it says where already
   const [state, setState] = useState<"idle" | "busy" | "error">("idle");
   const [why, setWhy] = useState("");
   const [focused, setFocused] = useState(true);
-  const [clip, setClip] = useState(ask.clip); // still what was on the clipboard
+  const [fromClip, setFromClip] = useState(clip); // still what was on the clipboard
   const input = useRef<HTMLInputElement>(null);
   const busy = state === "busy";
 
@@ -480,7 +531,7 @@ function JoinBox({ ask }: { ask: JoinAsk }) {
     setWhy("");
     try {
       await joinLink(what);
-      closeJoin();
+      onJoined();
     } catch (e) {
       setState("error");
       setWhy(sentence(errText(e)));
@@ -489,9 +540,15 @@ function JoinBox({ ask }: { ask: JoinAsk }) {
     }
   };
   useEffect(() => {
-    input.current?.focus();
-    input.current?.select(); // typing replaces what it opened with
-    if (ask.go) void go();
+    const focus = () => {
+      input.current?.focus();
+      input.current?.select(); // typing replaces what it opened with
+    };
+    focus();
+    // A panel is drawn hidden until it is placed, and nothing hidden takes the keyboard.
+    const f = window.requestAnimationFrame(focus);
+    if (now) void go();
+    return () => window.cancelAnimationFrame(f);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -510,69 +567,85 @@ function JoinBox({ ask }: { ask: JoinAsk }) {
     const c = [...v.toUpperCase()].filter((ch) => CODE_CHARS.includes(ch)).join("").slice(0, 6);
     setCode(c);
     setLink("");
-    setClip(false);
+    setFromClip(false);
     if (state === "error") setState("idle");
     if (c.length === 6 && c !== code) void go({ code: c });
   };
 
   const tiles: "busy" | "error" | undefined = busy ? "busy" : state === "error" ? "error" : undefined;
+  const field = (
+    <span className="relative inline-flex">
+      {link ? (
+        <span className="flex h-[40px] max-w-[300px] items-center justify-center gap-2 rounded-lg border border-line-strong bg-[var(--bg)] px-3">
+          <Link2 size={13} className="shrink-0 text-subtle" />
+          <span className="min-w-0 truncate font-mono text-[12px] text-muted">{link.replace(/\?.*$/, "")}</span>
+        </span>
+      ) : (
+        <label className="inline-flex cursor-text" onMouseDown={() => window.requestAnimationFrame(() => input.current?.focus())}>
+          <CodeTiles code={code} caret={focused && !tiles ? Math.min(code.length, 5) : undefined} state={tiles} />
+        </label>
+      )}
+      <input
+        ref={input}
+        value={link || code}
+        onChange={(e) => typed(e.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            void go();
+          }
+        }}
+        aria-label="The code or link"
+        autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="characters"
+        spellCheck={false}
+        className="pointer-events-none absolute top-0 left-0 size-px opacity-0"
+      />
+    </span>
+  );
+  const status = busy ? (
+    <span className="inline-flex items-center gap-1.5 text-muted">
+      <Spinner size={12} />
+      {link ? "Joining…" : "Looking for it on your tailnet…"}
+    </span>
+  ) : state === "error" ? (
+    <span className="text-bad">{why}</span>
+  ) : fromClip ? (
+    <span className="text-muted">From your clipboard. Press Join, or type another code.</span>
+  ) : (
+    idle
+  );
+  return { field, status, busy, ready: !!link || code.length === 6, go: () => void go() };
+}
+
+/** Type the code they gave you, or paste their link (⇧⌘J, the palette, a link clicked in a chat). */
+function JoinBox({ ask }: { ask: JoinAsk }) {
+  const entry = useCodeEntry({
+    value: ask.value,
+    now: ask.go,
+    clip: ask.clip,
+    idle: <span className="text-subtle">A code looks like 7KX-4PQ. It goes over Tailscale, straight to their computer.</span>,
+    onJoined: closeJoin,
+  });
   return (
     <Modal open onClose={closeJoin} width={400}>
-      <div className="relative px-6 pt-6 pb-4 text-center">
+      <div className="px-6 pt-6 pb-4 text-center">
         <div className="mx-auto mb-3 flex size-10 items-center justify-center rounded-xl bg-accent-soft text-accent">
           <Users size={18} />
         </div>
         <div className="text-[15px] font-semibold text-fg">Join a session</div>
         <div className="mt-1 text-[12.5px] text-muted">Type the code they gave you, or paste their link.</div>
-        {link ? (
-          <div className="mx-auto mt-5 flex h-[42px] max-w-full items-center justify-center gap-2 rounded-lg border border-line-strong bg-[var(--bg)] px-3">
-            <Link2 size={13} className="shrink-0 text-subtle" />
-            <span className="min-w-0 truncate font-mono text-[12px] text-muted">{link.replace(/\?.*$/, "")}</span>
-          </div>
-        ) : (
-          <label className="relative mt-5 inline-flex cursor-text" onMouseDown={() => window.requestAnimationFrame(() => input.current?.focus())}>
-            <CodeTiles code={code} caret={focused && !tiles ? Math.min(code.length, 5) : undefined} state={tiles} />
-          </label>
-        )}
-        <input
-          ref={input}
-          value={link || code}
-          onChange={(e) => typed(e.target.value)}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              void go();
-            }
-          }}
-          aria-label="The code or link"
-          autoComplete="off"
-          autoCorrect="off"
-          autoCapitalize="characters"
-          spellCheck={false}
-          className="pointer-events-none absolute size-px opacity-0"
-        />
-        <div className="mx-auto mt-3.5 flex min-h-[36px] max-w-[330px] items-start justify-center text-[12px] leading-snug">
-          {busy ? (
-            <span className="inline-flex items-center gap-1.5 text-muted">
-              <Spinner size={12} />
-              {link ? "Joining…" : "Looking for it on your tailnet…"}
-            </span>
-          ) : state === "error" ? (
-            <span className="text-bad">{why}</span>
-          ) : clip ? (
-            <span className="text-muted">From your clipboard. Press Join, or type another code.</span>
-          ) : (
-            <span className="text-subtle">A code looks like 7KX-4PQ. It goes over Tailscale, straight to their computer.</span>
-          )}
-        </div>
+        <div className="mt-5">{entry.field}</div>
+        <div className="mx-auto mt-3.5 flex min-h-[36px] max-w-[330px] items-start justify-center text-[12px] leading-snug">{entry.status}</div>
       </div>
       <div className="flex items-center justify-end gap-2 border-t border-line px-4 py-3">
         <Button variant="ghost" onClick={closeJoin}>
           Cancel
         </Button>
-        <Button variant="primary" loading={busy} disabled={!link && code.length < 6} onClick={() => void go()}>
+        <Button variant="primary" loading={entry.busy} disabled={!entry.ready} onClick={entry.go}>
           Join
         </Button>
       </div>

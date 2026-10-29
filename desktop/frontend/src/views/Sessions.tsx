@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, AppWindow, BellDot, Columns2, Copy, ExternalLink, Layers, Maximize2, Minimize2, MoreHorizontal, Pencil, Pin, PinOff, Plus, RotateCcw, Rows2, Search, SquareTerminal, Trash2, X } from "lucide-react";
+import { AlertTriangle, AppWindow, BellDot, Columns2, Copy, ExternalLink, Layers, LogIn, Maximize2, Minimize2, MoreHorizontal, Pencil, Pin, PinOff, Plus, RotateCcw, Rows2, Search, SquareTerminal, Trash2, X } from "lucide-react";
 import { api, call, errText, type Session } from "../lib/api";
 import { closeGroup, closeTab, focusGroup, getState, isIdleShell, jumpNeedsYou, loadSessions, needsYou, newTab, openLocalTab, openSessionTab, openShellTab, paneFolder, paneTitle, reattachTab, sessionFor, setState, splitPane, toast, toggleZoom, updateTab, useStore, type Group, type Tab, persistent, tabMachine, machineLabel, SHELL_PREFIX, gitKey, visibleGroups, setWorkspace, addWorkspace, renameWorkspace, removeWorkspace, moveToWorkspace, closeOtherGroups, togglePin, metaKey, setMeta, colorValue, COLORS, recipeFrom, liveClaude, restartClaude, placeSessionBy, combineGroups, placePaneBy, moveToOwnTab, separateGroup, moveGroupToNewWindow, openAgentTab, LOCAL } from "../lib/store";
 import { AGENT_NAMES, ago, baseName, cx, hasAgent, mod, sessionLabel, tildePath } from "../lib/util";
 import { DividerHandle, PaneFrame, PaneIcon } from "../components/Panes";
 import { MoveButton } from "../components/MoveButton";
 import { JoinedButton, ShareButton } from "../components/Share";
+import { askJoin } from "../lib/collab";
 import { askConfirm, askText, showMenu, type MenuRow } from "../components/ContextMenu";
 import { getDragged, setDragged, useDragged } from "../lib/drag";
 import { geometry, leaves } from "../lib/panes";
@@ -650,6 +651,9 @@ function Welcome() {
           <button onClick={() => openLocalTab()} className="mt-4 text-[12px] text-subtle hover:text-fg">
             or open a terminal on this computer
           </button>
+          <button onClick={() => void askJoin()} className="mt-1.5 block w-full text-[12px] text-subtle hover:text-fg">
+            or join someone's session with a code
+          </button>
         </div>
       </div>
     );
@@ -661,6 +665,19 @@ function Welcome() {
         <h2 className="text-[17px] font-semibold tracking-tight text-fg">Start working</h2>
         <p className="mt-1 text-[13px] text-muted">Sessions live in tmux on the machine. Close a tab and they keep going.</p>
         <StartCards running={running.map((m) => m.machine.name)} />
+        <button
+          onClick={() => void askJoin()}
+          className="mt-3 flex w-full items-center gap-3 rounded-xl border border-line px-3.5 py-2.5 text-left transition-colors hover:bg-hover"
+        >
+          <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-accent">
+            <LogIn size={14} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-[13px] font-medium text-fg">Join someone's session</span>
+            <span className="block truncate text-[11.5px] text-subtle">Type the code they gave you, or paste their link</span>
+          </span>
+          <Kbd>⇧{mod}J</Kbd>
+        </button>
         {recent.length > 0 && (
           <div className="mt-8">
             <div className="mb-2 text-[11px] font-semibold tracking-wide text-subtle uppercase">Attach to a session</div>

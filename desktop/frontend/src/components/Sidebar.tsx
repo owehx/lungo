@@ -11,6 +11,7 @@ import {
   GitBranch,
   ListTree,
   LayoutGrid,
+  LogIn,
   Monitor,
   Pencil,
   Plus,
@@ -342,6 +343,9 @@ export function Sidebar() {
           <span onClick={(e) => e.stopPropagation()} className="flex shrink-0 items-center">
             <IconButton label={mode === "status" ? "Grouped by what needs you. Click to group by machine" : "Grouped by machine. Click to group by what needs you"} className="size-6" onClick={() => setMode(mode === "status" ? "machine" : "status")}>
               {mode === "status" ? <Rows3 size={13} /> : <ListTree size={13} />}
+            </IconButton>
+            <IconButton label={`Join someone's session with a code (⇧${mod}J)`} className="size-6" onClick={() => void askJoin()}>
+              <LogIn size={13} />
             </IconButton>
             <IconButton label="New session or machine" className="size-6" onClick={add}>
               <Plus size={14} />
