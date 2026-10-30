@@ -58,6 +58,7 @@ import { NewMachineDialog } from "./views/NewMachine";
 import { SyncView } from "./views/Sync";
 import { FoldersView } from "./views/Folders";
 import { AccountsView } from "./views/Accounts";
+import { AddClaudeAccount } from "./components/ClaudeAccounts";
 import { SettingsView } from "./views/Settings";
 
 const views: Record<string, View> = {
@@ -424,6 +425,7 @@ export function App() {
       {modal?.type === "new-session" && <NewSessionDialog machine={modal.machine} dir={modal.dir} onClose={close} />}
       {modal?.type === "new-machine" && <NewMachineDialog onClose={close} />}
       {modal?.type === "add-machine" && <AddMachineDialog onClose={close} />}
+      {modal?.type === "add-claude" && <AddClaudeAccount open onClose={close} />}
       {modal?.type === "op" && <OpModal id={modal.id} onClose={close} />}
       <HistoryDialog />
       <SearchDialog />

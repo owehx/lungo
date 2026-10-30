@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"skybuild/internal/bootstrap"
@@ -47,10 +48,16 @@ func localSocket() string {
 	return "skybuild"
 }
 
-// LocalTmux is the path of tmux on this computer, or "" when it isn't installed.
+// LocalTmux is the path of tmux on this computer, or "" when it isn't installed. A tmux you
+// installed comes first; on a Mac without one it is the app's own (see bundledTmux).
 func LocalTmux() string {
 	if runtime.GOOS == "windows" {
 		return ""
+	}
+	if os.Getenv("SKY_BUNDLED_TMUX") == "1" { // the app's own even where one is installed, to try it
+		if p := bundledTmux(); p != "" {
+			return p
+		}
 	}
 	if p := osx.Which("tmux"); filepath.IsAbs(p) {
 		return p
@@ -58,7 +65,61 @@ func LocalTmux() string {
 	if p, err := exec.LookPath("tmux"); err == nil {
 		return p
 	}
-	return ""
+	return bundledTmux()
+}
+
+// bundledTmux is the tmux that came inside Lungo.app (Contents/Helpers/tmux, built by
+// scripts/build-tmux.sh), or "" outside the app. macOS doesn't come with tmux, and without it
+// nothing on this computer is a session.
+//
+// It runs from a copy in ~/.skybuild/bin: the server outlives the app, and the app may be
+// running from its DMG (a server started there keeps the disk from ejecting, and dies if it is
+// forced) or from a path macOS made up for an app opened in Downloads. The copy is replaced
+// by a rename, so a server already running keeps its program. That folder joins PATH (last,
+// so a tmux installed later wins), so the server and the shells in its panes find `tmux` too.
+var bundledTmux = sync.OnceValue(func() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	src := bundledTmuxFor(exe)
+	if src == "" {
+		return ""
+	}
+	p := filepath.Join(paths.Root(), "bin", "tmux")
+	if err := copyProgram(src, p); err != nil {
+		p = src // run it where it is rather than not at all
+	}
+	os.Setenv("PATH", os.Getenv("PATH")+string(os.PathListSeparator)+filepath.Dir(p))
+	return p
+})
+
+// copyProgram puts the program src at dst, unless it is there already.
+func copyProgram(src, dst string) error {
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return err
+	}
+	_, err = paths.WriteFile(dst, b, 0o755)
+	return err
+}
+
+// bundledTmuxFor is where the app whose program is exe keeps its tmux, if it has one.
+func bundledTmuxFor(exe string) string {
+	if runtime.GOOS != "darwin" {
+		return ""
+	}
+	if real, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = real
+	}
+	p := filepath.Join(filepath.Dir(filepath.Dir(exe)), "Helpers", "tmux")
+	if st, err := os.Stat(p); err != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0o111 == 0 {
+		return ""
+	}
+	return p
 }
 
 // localTmuxConf is what sky's tmux server on this computer starts with: the settings every

@@ -99,6 +99,7 @@ func (a *App) domReady(ctx context.Context) {
 	go a.healthLoop(ctx)
 	go engine.TidyPeek()
 	go engine.InstallLocalPeek()
+	go func() { _ = a.eng.SyncLocalLogin(ctx) }()
 	go a.iconLoop(ctx)
 	go a.win.reopen()
 	go a.updateLoop(ctx)
@@ -504,6 +505,13 @@ func (a *App) ClaudeStatus() ClaudeStatus {
 	t, _ := syncer.Token(ctx, acct, false, false)
 	st.HasToken = t != ""
 	return st
+}
+
+// InstallClaude installs Claude Code on this Mac with Anthropic's installer (no Node needed).
+func (a *App) InstallClaude() string {
+	return a.ops.start("claude-install", "Install Claude Code", "", func(ctx context.Context, r events.Reporter) (any, error) {
+		return nil, engine.EnsureLocalClaude(ctx, r)
+	})
 }
 
 // MintClaudeToken runs `claude setup-token` (browser approval) and stores the token.

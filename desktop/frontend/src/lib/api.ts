@@ -614,6 +614,7 @@ export const api = {
   restartClaude: (machine: string, session: string, sid: string, flags: string) => call<void>("RestartClaude", machine, session, sid, flags),
   localTmux: () => call<LocalTmuxInfo>("LocalTmux"),
   installTmux: () => call<string>("InstallTmux"),
+  installClaude: () => call<string>("InstallClaude"),
   openAtLogin: () => call<boolean>("OpenAtLogin"),
   setAppIcon: (id: string) => call<void>("SetAppIcon", id),
   setOpenAtLogin: (on: boolean) => call<void>("SetOpenAtLogin", on),

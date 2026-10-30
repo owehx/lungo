@@ -195,6 +195,9 @@ func (e *Engine) AddClaudeAccount(ctx context.Context, label, token string, opts
 	_ = e.adoptLocalAccount()
 	token = strings.TrimSpace(token)
 	if token == "" {
+		if err := EnsureLocalClaude(ctx, r); err != nil {
+			return nil, err
+		}
 		events.Stepf(r, "Creating a token (approve it in your browser as the account you're adding)")
 		t, err := syncer.MintToken(ctx)
 		if err != nil {

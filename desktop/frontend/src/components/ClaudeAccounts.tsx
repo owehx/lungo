@@ -395,6 +395,7 @@ export function AddClaudeAccount({ open, onClose }: { open: boolean; onClose: ()
             <Globe size={15} className="mt-0.5 shrink-0 text-accent" />
             <div>
               Your browser opens claude.ai to approve a token for <b className="font-medium text-fg">the account it's signed in to</b>. To add a different one, switch accounts on claude.ai first.
+              {local && !local.installed && <div className="mt-1.5 text-subtle">Claude Code isn't on this Mac yet: Lungo installs it first, which takes a minute.</div>}
               {localIsNew && (
                 <div className="mt-1.5 text-subtle">
                   This Mac's Claude Code is on <span className="text-fg">{local!.email}</span>. If that's the one you approve, it's named automatically.

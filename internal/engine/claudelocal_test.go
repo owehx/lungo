@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -282,4 +283,75 @@ func mustAtoi(t *testing.T, s string) int {
 		t.Fatalf("%q: %v", s, err)
 	}
 	return n
+}
+
+// On a Mac without Claude Code, the first `claude` in a pane installs it (here a fake curl
+// hands bash an installer that puts a fake Claude in ~/.local/bin, which isn't on PATH yet),
+// then starts it with the pool's token.
+func TestLocalLoginWrapperInstallsClaude(t *testing.T) {
+	for _, sh := range []string{"zsh", "bash"} {
+		path, err := exec.LookPath(sh)
+		if err != nil {
+			continue
+		}
+		root, home, bin := t.TempDir(), t.TempDir(), t.TempDir()
+		t.Setenv("SKYBUILD_HOME", root)
+		t.Setenv("HOME", home)
+		installer := `mkdir -p "$HOME/.local/bin" && printf '#!/bin/sh\necho "installed token=${CLAUDE_CODE_OAUTH_TOKEN:-none} args=$*"\n' > "$HOME/.local/bin/claude" && chmod +x "$HOME/.local/bin/claude"`
+		os.WriteFile(filepath.Join(bin, "curl"), []byte("#!/bin/sh\ncat <<'X'\n"+installer+"\nX\n"), 0o755)
+		os.WriteFile(localLoginScript(), []byte(localLoginScriptText()), 0o600)
+		os.MkdirAll(localLoginMarks(), 0o700)
+		os.WriteFile(localTokenFile(), []byte("sk-ant-oat01-pool\n"), 0o600)
+		run := func() string {
+			t.Helper()
+			cmd := exec.Command(path, "-c", localLoginLine+"\nclaude --resume abc")
+			cmd.Env = []string{"HOME=" + home, "PATH=" + bin + ":/usr/bin:/bin", "SKY_CLAUDE_LOGIN=" + localLoginScript()}
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("%s: %v\n%s", sh, err, out)
+			}
+			return strings.TrimSpace(string(out))
+		}
+		if got := run(); got != "Installing Claude Code (Lungo does this once)...\ninstalled token=sk-ant-oat01-pool args=--resume abc" {
+			t.Errorf("%s, first time: %q", sh, got)
+		}
+		if got := run(); got != "installed token=sk-ant-oat01-pool args=--resume abc" {
+			t.Errorf("%s, once installed: %q", sh, got)
+		}
+	}
+}
+
+// Claude's first-run screens are skipped without touching the rest of ~/.claude.json.
+func TestMarkClaudeOnboarded(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".claude.json")
+	if err := markClaudeOnboarded(); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(path); strings.TrimSpace(string(b)) != "{\n  \"hasCompletedOnboarding\": true\n}" {
+		t.Errorf("new file: %s", b)
+	}
+	os.WriteFile(path, []byte(`{"numStartups": 12345678901234567890, "projects": {"/x": {"hasTrustDialogAccepted": true}}, "hasCompletedOnboarding": false}`), 0o600)
+	if err := markClaudeOnboarded(); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	var got map[string]any
+	if json.Unmarshal(b, &got) != nil || got["hasCompletedOnboarding"] != true || !strings.Contains(string(b), "12345678901234567890") || !strings.Contains(string(b), "hasTrustDialogAccepted") {
+		t.Errorf("existing file: %s", b)
+	}
+	if st, _ := os.Stat(path); st.Mode().Perm() != 0o600 {
+		t.Errorf("mode %v", st.Mode())
+	}
+	before, _ := os.ReadFile(path)
+	markClaudeOnboarded()
+	if after, _ := os.ReadFile(path); string(after) != string(before) {
+		t.Error("rewritten although already done")
+	}
+	os.WriteFile(path, []byte("{not json"), 0o600)
+	markClaudeOnboarded()
+	if b, _ := os.ReadFile(path); string(b) != "{not json" {
+		t.Errorf("a file that isn't JSON was changed: %s", b)
+	}
 }

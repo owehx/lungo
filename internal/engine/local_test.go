@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -364,5 +365,74 @@ func TestProcessTableReadsThisProcess(t *testing.T) {
 	}
 	if a := p.args(me); !strings.Contains(a, filepath.Base(os.Args[0])) {
 		t.Fatalf("args(%d) = %q, want this test binary", me, a)
+	}
+}
+
+// The app's own tmux is found next to its program, through the link a moved app leaves, and
+// only when it can run.
+func TestBundledTmuxFor(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS app bundles only")
+	}
+	app := filepath.Join(t.TempDir(), "Lungo.app", "Contents")
+	exe := filepath.Join(app, "MacOS", "Lungo")
+	os.MkdirAll(filepath.Dir(exe), 0o755)
+	os.WriteFile(exe, nil, 0o755)
+	if got := bundledTmuxFor(exe); got != "" {
+		t.Fatalf("no Helpers/tmux: %q", got)
+	}
+	tm := filepath.Join(app, "Helpers", "tmux")
+	os.MkdirAll(filepath.Dir(tm), 0o755)
+	os.WriteFile(tm, []byte("#!/bin/sh\n"), 0o644)
+	if got := bundledTmuxFor(exe); got != "" {
+		t.Fatalf("not executable: %q", got)
+	}
+	os.Chmod(tm, 0o755)
+	if got, _ := filepath.EvalSymlinks(bundledTmuxFor(exe)); got != mustReal(t, tm) {
+		t.Fatalf("got %q, want %q", got, tm)
+	}
+	link := filepath.Join(t.TempDir(), "Lungo")
+	os.Symlink(exe, link)
+	if got, _ := filepath.EvalSymlinks(bundledTmuxFor(link)); got != mustReal(t, tm) {
+		t.Fatalf("through a link: %q", got)
+	}
+}
+
+func mustReal(t *testing.T, p string) string {
+	t.Helper()
+	r, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// The bundled tmux runs from a copy: made once, left alone while it is the same, and swapped
+// by a rename when the app brings another, so a server running the old one keeps its program.
+func TestCopyProgram(t *testing.T) {
+	src, dst := filepath.Join(t.TempDir(), "tmux"), filepath.Join(t.TempDir(), "bin", "tmux")
+	os.WriteFile(src, []byte("one"), 0o755)
+	if err := copyProgram(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	st1, err := os.Stat(dst)
+	if err != nil || st1.Mode().Perm() != 0o755 {
+		t.Fatalf("copy: %v %v", st1, err)
+	}
+	copyProgram(src, dst)
+	if st2, _ := os.Stat(dst); !os.SameFile(st1, st2) {
+		t.Error("an identical copy was replaced")
+	}
+	running, _ := os.Open(dst) // as a running server holds it
+	defer running.Close()
+	os.WriteFile(src, []byte("two"), 0o755)
+	if err := copyProgram(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(dst); string(b) != "two" {
+		t.Errorf("not updated: %q", b)
+	}
+	if b := make([]byte, 3); func() bool { n, _ := running.ReadAt(b, 0); return n != 3 || string(b) != "one" }() {
+		t.Errorf("the running copy changed under it: %q", b)
 	}
 }

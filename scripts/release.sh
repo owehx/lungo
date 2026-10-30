@@ -1,16 +1,20 @@
 #!/bin/sh
 # Ships a Lungo release: builds the app for Apple silicon and Intel, signs it with the
-# Developer ID, packs a DMG (for people) and a zip (for the app's own updater), writes
-# latest.json, tags the commit and publishes it all as a GitHub release. Running copies of
-# Lungo pick it up within a few hours (desktop/update.go reads latest.json).
+# Developer ID, packs a DMG (for people) and a zip (for the app's own updater), has Apple
+# notarize them, writes latest.json, tags the commit and publishes it all as a GitHub release.
+# Running copies of Lungo pick it up within a few hours (desktop/update.go reads latest.json).
 #
 #   scripts/release.sh 0.1.4 "What changed, in a line or two."
+#
+# Notarizing uses a notarytool keychain profile (an App Store Connect API key), made once:
+#   xcrun notarytool store-credentials lungo-notary --key AuthKey_<id>.p8 --key-id <id> --issuer <uuid>
 set -eu
 
 V=${1:?usage: scripts/release.sh X.Y.Z "notes"}
 NOTES=${2:-}
 V=${V#v}
 IDENTITY=${LUNGO_SIGN_IDENTITY:-"Developer ID Application: Teddy Oweh (W5M7LV7263)"}
+NOTARY=${LUNGO_NOTARY_PROFILE:-lungo-notary}
 REPO=teddyoweh/lungo
 cd "$(dirname "$0")/.."
 ROOT=$PWD
@@ -20,6 +24,11 @@ case $V in *[!0-9.]* | "" ) echo "version must look like 1.2.3" >&2; exit 1 ;; e
 if git rev-parse "v$V" >/dev/null 2>&1; then echo "v$V is already tagged" >&2; exit 1; fi
 if [ -n "$(git status --porcelain -- desktop/wails.json)" ]; then
 	echo "desktop/wails.json has changes of its own: commit or undo them first" >&2
+	exit 1
+fi
+# Checked before anything is committed or tagged, so a missing login can't leave a half-made release.
+if ! xcrun notarytool history --keychain-profile "$NOTARY" >/dev/null 2>&1; then
+	echo "notarytool profile \"$NOTARY\" is missing or can't sign in (see the top of this script)" >&2
 	exit 1
 fi
 
@@ -40,20 +49,34 @@ ln -s "$ROOT/desktop/frontend/node_modules" "$SRC/desktop/frontend/node_modules"
 (cd "$SRC/desktop" && wails build -clean -platform darwin/universal -ldflags "-X main.Version=$V")
 rm -rf desktop/build/bin && mkdir -p desktop/build && cp -R "$SRC/desktop/build/bin" desktop/build/bin
 APP=desktop/build/bin/Lungo.app
-codesign --force --deep --options runtime --timestamp --entitlements desktop/build/darwin/entitlements.plist --sign "$IDENTITY" "$APP"
+# tmux for Macs that have none (macOS doesn't come with it; see scripts/build-tmux.sh). It is
+# signed on its own, without the app's entitlements, before the app that holds it.
+mkdir -p "$APP/Contents/Helpers"
+cp "$("$ROOT/scripts/build-tmux.sh")" "$APP/Contents/Helpers/tmux"
+codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP/Contents/Helpers/tmux"
+codesign --force --options runtime --timestamp --entitlements desktop/build/darwin/entitlements.plist --sign "$IDENTITY" "$APP"
 codesign --verify --deep --strict "$APP"
 
 mkdir -p dist
 ZIP=dist/Lungo-$V-mac.zip
 DMG=dist/Lungo-$V.dmg
 rm -f "$ZIP" "$DMG"
-ditto -c -k --keepParent "$APP" "$ZIP"
 STAGE=$(mktemp -d)
 ditto "$APP" "$STAGE/Lungo.app"
 ln -s /Applications "$STAGE/Applications"
 hdiutil create -quiet -volname Lungo -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 rm -rf "$STAGE"
 codesign --timestamp --sign "$IDENTITY" "$DMG"
+
+# Without notarization, macOS 15 and later refuse a downloaded Lungo outright ("Apple could not
+# verify…", with only a Done button). One submission of the DMG covers the app inside it; the
+# ticket is then stapled to both, so they open even offline. The zip is packed after that.
+xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY" --wait --timeout 30m
+xcrun stapler staple "$DMG"
+xcrun stapler staple "$APP"
+spctl -a -t install "$DMG"
+spctl -a -t exec "$APP"
+ditto -c -k --keepParent "$APP" "$ZIP"
 
 SUM=$(shasum -a 256 "$ZIP" | cut -d' ' -f1)
 SIZE=$(stat -f%z "$ZIP")
@@ -66,5 +89,5 @@ PY
 git push -q origin HEAD "v$V"
 gh release create "v$V" "$DMG" "$ZIP" dist/latest.json -R "$REPO" --title "Lungo $V" --notes "${NOTES:-Lungo $V}
 
-Universal (Apple silicon and Intel), signed with Developer ID. Running copies of Lungo update themselves; to install by hand, open the DMG and drag Lungo to Applications."
+Universal (Apple silicon and Intel), signed with Developer ID and notarized by Apple. Running copies of Lungo update themselves; to install by hand, open the DMG and drag Lungo to Applications."
 echo "released Lungo $V: https://github.com/$REPO/releases/tag/v$V"

@@ -131,6 +131,7 @@ export type Modal =
   | { type: "palette" }
   | { type: "recipes"; edit?: Recipe } // the list, or the form for one (a new one has no id yet)
   | { type: "composer" }
+  | { type: "add-claude" } // add a Claude account: browser sign-in or a pasted token
   | { type: "op"; id: string };
 
 /**

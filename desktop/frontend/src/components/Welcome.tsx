@@ -4,16 +4,17 @@
 // something the app does and move on by themselves, and the last ones pick a look and start
 // something. Enter or → goes on, ← goes back, Esc skips the rest.
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { ArrowLeft, Check, Copy, FileText, Folder, Plus, Server } from "lucide-react";
+import { ArrowLeft, Check, Copy, Download, FileText, Folder, Plus, Server } from "lucide-react";
 import { api, call, errText, type ClaudeStatus, type Credential } from "../lib/api";
-import { LOCAL, finishWelcome, getState, isDark, openAgentTab, pickSkin, setState, setTheme, toast, useStore, type Theme } from "../lib/store";
+import { LOCAL, finishWelcome, getState, isDark, openAgentTab, pickSkin, runOp, setState, setTheme, toast, useStore, waitOp, type Theme } from "../lib/store";
 import { AGENT_NAMES, cx } from "../lib/util";
 import { APP_ICONS, appIconSrc } from "../lib/appicons";
 import { THEMES } from "../lib/themes";
 import { AgentIcon, BrandIcon, LocalIcon, ProviderIcon, isBrand } from "./Brand";
-import { WorkingMark } from "./ui";
+import { Spinner, WorkingMark } from "./ui";
 import { ThemeTile } from "../views/Settings";
 import { AGENTS } from "./AgentMenu";
+import { useClaudeAccounts } from "./ClaudeAccounts";
 
 type StoryId = "hello" | "agents" | "machines" | "logins" | "sessions" | "panes" | "files" | "move" | "screen" | "look" | "go";
 const STORIES: { id: StoryId; auto?: boolean }[] = [
@@ -31,9 +32,8 @@ const STORIES: { id: StoryId; auto?: boolean }[] = [
 ];
 const SCENE_MS = 7000; // how long a feature story plays before the next
 
-/** How to put an agent on this Mac, where it's a one-liner. */
+/** How to put an agent on this Mac, where it's a one-liner. Claude Code the app installs itself. */
 const INSTALL: Record<string, string> = {
-  claude: "npm i -g @anthropic-ai/claude-code",
   codex: "npm i -g @openai/codex",
   mantis: "uv tool install mantis-agent-sdk",
 };
@@ -368,9 +368,27 @@ function Agents({ found }: { found: Found }) {
   );
 }
 
-function AgentCard({ agent, state, version }: { agent: string; state: "looking" | "ready" | "missing"; version?: string }) {
+function AgentCard({ agent, state: found, version: foundVersion }: { agent: string; state: "looking" | "ready" | "missing"; version?: string }) {
   const [copied, setCopied] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [installed, setInstalled] = useState<string | null>(null); // the version just installed here
   const install = INSTALL[agent];
+  const state = installed !== null ? "ready" : found;
+  const version = installed || foundVersion;
+  const installClaude = async () => {
+    setInstalling(true);
+    try {
+      const end = await waitOp(await runOp(api.installClaude(), true));
+      if (end.error) toast("error", "Couldn't install Claude Code", end.error);
+      else {
+        const list = await call<{ id: string; version: string }[]>("AgentVersions", LOCAL).catch(() => []);
+        setInstalled(list?.find((x) => x.id === agent)?.version ?? "");
+      }
+    } catch {
+      /* runOp said why */
+    }
+    setInstalling(false);
+  };
   return (
     <div className={cx(TILE, "relative flex h-[84px] items-center gap-4 overflow-hidden px-4", state === "looking" && "wl-shimmer")}>
       <span className={cx("relative flex size-11 shrink-0 items-center justify-center rounded-xl transition-opacity duration-300", state === "missing" ? "opacity-40" : "opacity-100", state === "ready" && "wl-ring")}>
@@ -382,7 +400,17 @@ function AgentCard({ agent, state, version }: { agent: string; state: "looking" 
           {state === "looking" && <span className="text-subtle">Looking…</span>}
           {state === "ready" && <span className="wl-rise block text-subtle">{version ? `v${version}` : "Installed"}</span>}
           {state === "missing" &&
-            (install ? (
+            (agent === "claude" ? (
+              <button
+                onClick={installClaude}
+                disabled={installing}
+                title="Install Claude Code with Anthropic's installer"
+                className="wl-rise flex items-center gap-1.5 text-[12px] font-medium text-accent transition-colors hover:text-fg disabled:text-subtle"
+              >
+                {installing ? <Spinner size={11} /> : <Download size={12} />}
+                {installing ? "Installing…" : "Install"}
+              </button>
+            ) : install ? (
               <button
                 onClick={() => api.copy(install).then(() => setCopied(true), (e) => toast("error", "Couldn't copy", errText(e)))}
                 title="Copy the command that installs it"
@@ -475,9 +503,14 @@ function Machines() {
 
 function Logins({ found }: { found: Found }) {
   const machines = useStore((s) => s.machines);
+  const accounts = useClaudeAccounts() ?? [];
   const creds = (found.creds ?? []).filter((c) => c.present && !c.skipped);
   const shown = creds.slice(0, 11);
-  const signedIn = !!found.claude?.signedIn;
+  // Signed in: an account Lungo signs sessions in with, or Claude Code's own login on this Mac.
+  const inUse = accounts.find((a) => a.active) ?? accounts[0];
+  const signedIn = !!inUse || !!found.claude?.signedIn;
+  const claudeLine =
+    found.claude === null ? "Looking…" : inUse ? `Sessions sign in as ${inUse.account.label || inUse.account.email || "your account"}` : signedIn ? "Signed in on this Mac" : "Not signed in yet. Sign in once and every session uses it.";
   const where = machines.length ? `They go to ${machines.map((m) => m.machine.name).slice(0, 3).join(", ")}${machines.length > 3 ? " and more" : ""}, and to any machine you add.` : "Add a machine and they go with it.";
   return (
     <Frame cmd="sky sync" title="Your logins follow you" body={`Sign in once, here. Claude Code, GitHub, your command-line tools and API keys go along, so no machine asks you to log in again. ${where}`}>
@@ -487,8 +520,16 @@ function Logins({ found }: { found: Found }) {
         </span>
         <div className="min-w-0 flex-1">
           <div className="text-[13.5px] font-medium text-fg">Claude Code</div>
-          <div className="text-[12px] text-subtle">{found.claude === null ? "Looking…" : signedIn ? "Signed in on this Mac" : "Not signed in here yet: run claude and type /login"}</div>
+          <div className="text-[12px] text-subtle">{claudeLine}</div>
         </div>
+        {!signedIn && found.claude !== null && (
+          <button
+            onClick={() => setState({ modal: { type: "add-claude" } })}
+            className="flex h-8 shrink-0 items-center rounded-full bg-fg px-3.5 text-[12.5px] font-medium text-bg transition-transform hover:scale-[1.03] active:scale-[0.98]"
+          >
+            Sign in
+          </button>
+        )}
         {signedIn && (
           <span className="wl-pop flex size-6 items-center justify-center rounded-full bg-ok text-black" style={delay(350)}>
             <Check size={13} strokeWidth={3} />
