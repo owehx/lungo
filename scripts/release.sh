@@ -15,7 +15,7 @@ NOTES=${2:-}
 V=${V#v}
 IDENTITY=${LUNGO_SIGN_IDENTITY:-"Developer ID Application: Teddy Oweh (W5M7LV7263)"}
 NOTARY=${LUNGO_NOTARY_PROFILE:-lungo-notary}
-REPO=teddyoweh/lungo
+REPO=owehx/lungo
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 export PATH="$HOME/go/bin:$PATH"

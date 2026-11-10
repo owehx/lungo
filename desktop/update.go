@@ -34,7 +34,7 @@ import (
 // in ~/.skybuild/updates/state.json. The update to install waits in ~/.skybuild/updates/ready.
 
 // updateFeed is the newest release's manifest (scripts/release.sh writes it).
-const updateFeed = "https://github.com/teddyoweh/lungo/releases/latest/download/latest.json"
+const updateFeed = "https://github.com/owehx/lungo/releases/latest/download/latest.json"
 
 func feedURL() string {
 	if v := os.Getenv("SKY_UPDATE_FEED"); v != "" {
@@ -111,7 +111,7 @@ func signer(app string) string {
 // selfUpdatable says whether this build can replace itself, and why not.
 var selfUpdatable = sync.OnceValues(func() (bool, string) {
 	if runtime.GOOS != "darwin" {
-		return false, "Updates come from github.com/teddyoweh/lungo/releases on this system."
+		return false, "Updates come from github.com/owehx/lungo/releases on this system."
 	}
 	if appVersion() == "dev" {
 		return false, "A development build doesn't update itself."
