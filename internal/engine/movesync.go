@@ -30,9 +30,12 @@ import (
 // changed. The move itself (MoveSession) then stops the session and sends the last changes,
 // which takes seconds even for a folder of many gigabytes.
 //
-// The conversations wait in a staging folder on the other device (~/.cache/sky-move/<name>)
-// and only land in ~/.claude/projects, with their paths rewritten, once the session has
-// stopped: until then they are still being written where they are.
+// The conversations wait in a staging folder on the other device (~/.cache/sky-move/<name>),
+// and are rewritten for the folder's new place into a folder beside it (<name>.landed) each
+// time, only what changed. They go into ~/.claude/projects, which is a rename, once the session
+// has stopped: until then they are still being written where they are. The move sends the
+// folder's files changed since the last copy by name (sentStamp), found here in a blink, so it
+// doesn't wait on rsync comparing every file on both sides.
 //
 // Between two machines, or where a side has no rsync, a move still streams everything through
 // this computer after the stop (send, in move.go).
@@ -261,8 +264,9 @@ func excludes(skip []string) []string {
 	return out
 }
 
-// sendQuick is send by rsync. Ahead of a move (land false) it copies the folder and stages the
-// conversations; for the move itself (land true) it sends what changed and lands them.
+// sendQuick is send by rsync. Ahead of a move (land false) it copies the folder and gets the
+// conversations ready there; for the move itself (land true) it sends what changed since and
+// puts the conversations in place. The folder and the conversations go side by side.
 func (e *Engine) sendQuick(ctx context.Context, plan MovePlan, r events.Reporter, land bool) (MoveResult, error) {
 	res := MoveResult{MovePlan: plan}
 	from, to := plan.From, plan.To
@@ -271,24 +275,36 @@ func (e *Engine) sendQuick(ctx context.Context, plan MovePlan, r events.Reporter
 		return res, err
 	}
 	local := IsLocal(from) // sending from here (a push), or bringing here (a pull)
-
-	// The folder.
-	if land {
-		events.Stepf(r, "Sending what changed in %s", plan.Name)
-	} else {
-		events.Stepf(r, "Copying %s to %s", plan.Name, machineLabel(to))
-	}
-	if _, err := e.shOn(ctx, to, "mkdir -p "+sshx.Quote(plan.ToDir)); err != nil {
+	dirs, count, err := e.conversationDirs(ctx, from, plan.FromDir)
+	if err != nil {
 		return res, err
 	}
-	src, dst := plan.FromDir+"/", plan.ToDir+"/"
-	if local {
-		dst = remoteArg(t, dst)
+	res.Conversations = count
+	along := ""
+	if len(dirs) > 0 {
+		along = " and " + plural(count, "Claude conversation")
+	}
+	if land {
+		events.Stepf(r, "Sending what changed in %s%s", plan.Name, along)
 	} else {
-		src = remoteArg(t, src)
+		events.Stepf(r, "Copying %s%s to %s", plan.Name, along, machineLabel(to))
+	}
+	if _, err := e.shOn(ctx, to, "mkdir -p "+sshx.Quote(plan.ToDir)+` "$HOME"/`+sshx.Quote(moveStage(plan.FromDir))); err != nil {
+		return res, err
+	}
+
+	var wg sync.WaitGroup
+	var convErr error
+	if len(dirs) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			convErr = e.sendConversations(ctx, t, plan, dirs, local, land, r)
+		}()
 	}
 	started := time.Now()
-	st, err := e.rsyncReported(ctx, t, "", append(excludes(plan.Skip), src, dst), !land, r)
+	st, err := e.sendFolder(ctx, t, plan, local, land, r)
+	wg.Wait()
 	if err != nil {
 		return res, err
 	}
@@ -297,49 +313,169 @@ func (e *Engine) sendQuick(ctx context.Context, plan MovePlan, r events.Reporter
 		events.Warnf(r, "Some files didn't go: %s", st.Warning)
 	}
 	events.Infof(r, "Files: %d changed, %s over the wire in %s", st.Files, byteSize(st.Wire), time.Since(started).Round(100*time.Millisecond))
-
-	// The conversations, to the staging folder there.
-	dirs, count, err := e.conversationDirs(ctx, from, plan.FromDir)
-	if err != nil {
-		return res, err
-	}
-	res.Conversations = count
-	stage := moveStage(plan.FromDir)
-	if len(dirs) > 0 {
-		events.Stepf(r, "Bringing %s along", plural(count, "Claude conversation"))
-		if _, err := e.shOn(ctx, to, `mkdir -p "$HOME"/`+sshx.Quote(stage)); err != nil {
-			return res, err
-		}
-		var args []string
-		dir := ""
-		if local {
-			dir = filepath.Join(paths.Home(), ".claude", "projects")
-			for _, d := range dirs {
-				args = append(args, "./"+d) // they start with "-": not to be read as options
-			}
-			args = append(args, remoteArg(t, stage+"/"))
-		} else {
-			for _, d := range dirs {
-				args = append(args, "--include=/"+d+"/", "--include=/"+d+"/**")
-			}
-			args = append(args, "--exclude=/*", remoteArg(t, ".claude/projects/"), filepath.Join(paths.Home(), stage)+"/")
-		}
-		if _, err := e.rsyncReported(ctx, t, dir, args, !land, r); err != nil {
-			return res, err
-		}
+	if convErr != nil {
+		return res, convErr
 	}
 	if !land {
 		events.Donef(r, "%s is copied to %s; the move sends only what changes from here", plan.Name, machineLabel(to))
 		return res, nil
 	}
-	if len(dirs) > 0 {
-		if _, err := e.shOn(ctx, to, landScript(`s="$HOME"/`+sshx.Quote(stage), plan.FromDir, plan.ToDir)); err != nil {
-			return res, fmt.Errorf("putting the conversations in place on %s: %w", machineLabel(to), err)
-		}
-	}
+	e.shOn(ctx, from, `rm -f "$HOME"/`+sshx.Quote(sentStamp(to, plan.FromDir))+` "$HOME"/`+sshx.Quote(sentStamp(to, plan.FromDir)+".next"))
 	res.Latest = e.latestConversation(ctx, to, plan.ToDir)
 	events.Donef(r, "%s is on %s at %s", plan.Name, machineLabel(to), plan.ToDir)
 	return res, nil
+}
+
+// sentStamp marks, on the device a folder goes from, when its last copy ahead to a device
+// began (under its home): what changed after it is what the move has left to send.
+func sentStamp(to, fromDir string) string {
+	return ".cache/sky-move/sent-" + reUnsafeName.ReplaceAllString(to, "_") + claudeProjectName(fromDir)
+}
+
+var reUnsafeName = regexp.MustCompile(`[^A-Za-z0-9._-]`)
+
+// changedMax is how many changed files the move sends by name; past that, rsync looks the
+// whole folder over instead.
+const changedMax = 5000
+
+// sendFolder sends the folder. Copying ahead it looks the whole folder over and marks when it
+// began; the move after it sends just the files changed since (found here in a blink, where
+// rsync would compare every file on both sides).
+func (e *Engine) sendFolder(ctx context.Context, t sshx.Target, plan MovePlan, local, land bool, r events.Reporter) (rsyncStats, error) {
+	from, to := plan.From, plan.To
+	stamp := `"$HOME"/` + sshx.Quote(sentStamp(to, plan.FromDir))
+	src, dst := plan.FromDir+"/", plan.ToDir+"/"
+	if local {
+		dst = remoteArg(t, dst)
+	} else {
+		src = remoteArg(t, src)
+	}
+	args := excludes(plan.Skip)
+	if !land {
+		if _, err := e.shOn(ctx, from, `mkdir -p "$HOME/.cache/sky-move" && touch `+stamp+`.next`); err != nil {
+			return rsyncStats{}, err
+		}
+	} else if local {
+		if files, ok := e.changedSince(ctx, plan, stamp); ok {
+			if len(files) == 0 {
+				return rsyncStats{}, nil
+			}
+			list, err := os.CreateTemp("", "sky-files-*")
+			if err != nil {
+				return rsyncStats{}, err
+			}
+			defer os.Remove(list.Name())
+			list.WriteString(strings.Join(files, "\n") + "\n")
+			list.Close()
+			args = append(args, "--files-from="+list.Name())
+		}
+	}
+	st, err := e.rsyncReported(ctx, t, "", append(args, src, dst), !land, r)
+	if err == nil && !land {
+		_, err = e.shOn(ctx, from, `mv -f `+stamp+`.next `+stamp)
+	}
+	return st, err
+}
+
+// changedSince lists the files in a folder here changed since its last copy ahead (by their
+// ctime, which moving or restoring a file also sets), relative to it. Not ok: there was no copy
+// ahead, or too much changed to name; rsync looks the folder over.
+func (e *Engine) changedSince(ctx context.Context, plan MovePlan, stamp string) ([]string, bool) {
+	prune := make([]string, 0, len(plan.Skip))
+	for _, s := range plan.Skip {
+		prune = append(prune, "-name "+sshx.Quote(s))
+	}
+	script := `st=` + stamp + `; [ -f "$st" ] || { echo none; exit 0; }
+cd ` + sshx.Quote(plan.FromDir) + ` && find . \( ` + strings.Join(prune, " -o ") + ` \) -prune -o ! -type d -cnewer "$st" -print | head -` + strconv.Itoa(changedMax+1)
+	out, err := e.shOn(ctx, plan.From, script)
+	if err != nil {
+		return nil, false
+	}
+	var files []string
+	for _, l := range strings.Split(out, "\n") {
+		if l == "none" {
+			return nil, false
+		}
+		if l = strings.TrimPrefix(l, "./"); l != "" {
+			files = append(files, l)
+		}
+	}
+	return files, len(files) <= changedMax
+}
+
+// sendConversations sends the folder's conversations to the staging folder there and lands
+// them, paths rewritten, in a folder beside it; the move then puts them in place. Each time
+// only the files that changed are sent and rewritten, so all that is left at the move is the
+// newest lines of the conversations still being written, and a rename.
+func (e *Engine) sendConversations(ctx context.Context, t sshx.Target, plan MovePlan, dirs []string, local, land bool, r events.Reporter) error {
+	stage := moveStage(plan.FromDir)
+	var args []string
+	dir := ""
+	if local {
+		dir = filepath.Join(paths.Home(), ".claude", "projects")
+		for _, d := range dirs {
+			args = append(args, "./"+d) // they start with "-": not to be read as options
+		}
+		args = append(args, remoteArg(t, stage+"/"))
+	} else {
+		for _, d := range dirs {
+			args = append(args, "--include=/"+d+"/", "--include=/"+d+"/**")
+		}
+		args = append(args, "--exclude=/*", remoteArg(t, ".claude/projects/"), filepath.Join(paths.Home(), stage)+"/")
+	}
+	if _, err := e.rsyncReported(ctx, t, dir, args, false, events.Func(func(events.Event) {})); err != nil {
+		return err
+	}
+	if _, err := e.shOn(ctx, plan.To, landAhead(stage, plan.FromDir, plan.ToDir, land)); err != nil {
+		return fmt.Errorf("putting the conversations in place on %s: %w", machineLabel(plan.To), err)
+	}
+	return nil
+}
+
+// landPerl rewrites the conversations waiting in a staging folder into a folder beside it
+// (".landed"), named for the folder's new place and with the paths inside pointing there: only
+// what changed since it last ran, by size and time (".sky-sig" remembers). With place, it then
+// moves all of them into ~/.claude/projects, which is a rename, and clears both folders away.
+const landPerl = `use strict; use warnings; use File::Find; use File::Path qw(make_path remove_tree); use File::Copy qw(copy move);
+my ($stage, $proj, $oldn, $newn, $old, $new, $place) = @ARGV;
+my $shadow = "$stage.landed"; my $sigf = "$shadow/.sky-sig"; my %sig;
+if (open(my $fh, "<", $sigf)) { while (<$fh>) { chomp; my ($p, $s) = split /\t/, $_, 2; $sig{$p} = $s if defined $s; } close $fh; }
+make_path($shadow);
+my $dirOf = sub { my $p = shift; $p =~ s{/[^/]*$}{}; $p };
+find({ no_chdir => 1, wanted => sub {
+  my $f = $File::Find::name; return if -l $f || ! -f _;
+  my ($top, $rest) = split m{/}, substr($f, length($stage) + 1), 2;
+  return unless defined $rest && substr($top, 0, length($oldn)) eq $oldn;
+  my $to = $newn . substr($top, length($oldn)) . "/" . $rest;
+  my @st = stat($f); my $s = "$st[7] $st[9]"; my $t = "$shadow/$to";
+  return if defined $sig{$to} && $sig{$to} eq $s && -e $t;
+  make_path($dirOf->($t));
+  if ($old ne $new && $f =~ /\.jsonl$/) {
+    open(my $in, "<:raw", $f) or die "$f: $!"; my $c = do { local $/; <$in> }; close $in;
+    $c =~ s/\Q$old\E/$new/g;
+    open(my $out, ">:raw", "$t.sky-tmp") or die "$t: $!"; print $out $c; close $out or die "$t: $!";
+  } else { copy($f, "$t.sky-tmp") or die "$f: $!"; }
+  rename("$t.sky-tmp", $t) or die "$t: $!";
+  chmod($st[2] & 07777, $t); utime($st[8], $st[9], $t);
+  $sig{$to} = $s;
+}}, $stage) if -d $stage;
+open(my $fh, ">", "$sigf.tmp") or die "$sigf: $!"; print $fh "$_\t$sig{$_}\n" for sort keys %sig; close $fh or die; rename("$sigf.tmp", $sigf) or die;
+exit 0 unless $place;
+for my $to (sort keys %sig) {
+  my $t = "$shadow/$to"; next unless -e $t;
+  my $d = "$proj/$to"; make_path($dirOf->($d));
+  rename($t, $d) or move($t, $d) or die "$d: $!";
+}
+remove_tree($shadow, $stage);`
+
+// landAhead is the script that runs landPerl on the device the conversations go to.
+func landAhead(stage, fromAbs, toAbs string, place bool) string {
+	p := "0"
+	if place {
+		p = "1"
+	}
+	return `mkdir -p "$HOME/.claude/projects" && perl -e ` + sshx.Quote(landPerl) + ` "$HOME"/` + sshx.Quote(stage) + ` "$HOME/.claude/projects" ` +
+		sshx.Quote(claudeProjectName(fromAbs)) + " " + sshx.Quote(claudeProjectName(toAbs)) + " " + sshx.Quote(fromAbs) + " " + sshx.Quote(toAbs) + " " + p
 }
 
 // PrecopyMove copies a folder and its conversations to another device ahead of moving its
@@ -357,13 +493,17 @@ func (e *Engine) PrecopyMove(ctx context.Context, from, to, dir string, r events
 }
 
 // DropPrecopy forgets a copy made ahead of a move that won't happen: the conversations waiting
-// on the other device. (The folder copy stays: it is a copy of a folder, like any other.)
+// on the other device, and the mark of when it was made. (The folder copy stays: it is a copy
+// of a folder, like any other.)
 func (e *Engine) DropPrecopy(ctx context.Context, from, to, dir string) error {
 	_, abs, err := e.homeAndPath(ctx, from, dir)
 	if err != nil || abs == "" {
 		return err
 	}
-	_, err = e.shOn(ctx, to, `rm -rf "$HOME"/`+sshx.Quote(moveStage(abs)))
+	st := `"$HOME"/` + sshx.Quote(sentStamp(to, abs))
+	e.shOn(ctx, from, `rm -f `+st+` `+st+`.next`)
+	s := `"$HOME"/` + sshx.Quote(moveStage(abs))
+	_, err = e.shOn(ctx, to, `rm -rf `+s+` `+s+`.landed`)
 	return err
 }
 

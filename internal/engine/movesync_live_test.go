@@ -95,11 +95,30 @@ func TestMoveQuickLive(t *testing.T) {
 		t.Errorf("no progress lines: %v", rec.Events)
 	}
 
-	// Work goes on here; then the move sends only that.
+	// The conversations are rewritten ahead, beside the stage, and not yet in place.
+	if got := sh(machine, `grep -c `+rdir+` "$HOME/`+moveStage(dir)+`.landed/`+claudeProjectName(rdir)+`/`+sid+`.jsonl"`); got != "1" {
+		t.Fatalf("landed ahead: %q", got)
+	}
+
+	// Work goes on here and is copied again; then more, which the move sends by name.
+	appendConv := func(msg string) {
+		f, _ := os.OpenFile(filepath.Join(conv, sid+".jsonl"), os.O_APPEND|os.O_WRONLY, 0)
+		f.WriteString(`{"cwd":"` + dir + `","message":"` + msg + `"}` + "\n")
+		f.Close()
+	}
+	appendConv("again")
+	if _, err := e.PrecopyMove(ctx, LocalMachine, machine, dir, rec); err != nil {
+		t.Fatalf("precopy again: %v", err)
+	}
 	must(os.WriteFile(filepath.Join(dir, "a.txt"), []byte("two\n"), 0o644))
-	f, _ := os.OpenFile(filepath.Join(conv, sid+".jsonl"), os.O_APPEND|os.O_WRONLY, 0)
-	f.WriteString(`{"cwd":"` + dir + `","message":"later"}` + "\n")
-	f.Close()
+	must(os.MkdirAll(filepath.Join(dir, "new", "deep"), 0o755))
+	must(os.WriteFile(filepath.Join(dir, "new", "deep", "n.txt"), []byte("n\n"), 0o644))
+	must(os.WriteFile(filepath.Join(dir, "node_modules", "x", "late.js"), []byte("x"), 0o644))
+	appendConv("later")
+	plan, _ := e.PlanMove(ctx, LocalMachine, machine, dir)
+	if files, ok := e.changedSince(ctx, plan, `"$HOME"/`+sentStamp(machine, dir)); !ok || len(files) != 2 {
+		t.Fatalf("changed since the copy: %v %v", files, ok)
+	}
 	started := time.Now()
 	res, err = e.MoveSession(ctx, LocalMachine, "", machine, dir, rec)
 	if err != nil {
@@ -112,9 +131,12 @@ func TestMoveQuickLive(t *testing.T) {
 	if res.Latest != sid {
 		t.Errorf("latest %q, want %q", res.Latest, sid)
 	}
-	landed := sh(machine, `cat "$HOME/.claude/projects/`+claudeProjectName(rdir)+`/`+sid+`.jsonl"; cat `+rdir+`/a.txt; [ -e "$HOME/`+moveStage(dir)+`" ] && echo stage-left; true`)
-	if strings.Contains(landed, `"`+dir) || !strings.Contains(landed, rdir+`/a.txt`) || !strings.Contains(landed, "later") || !strings.HasSuffix(landed, "two") {
+	landed := sh(machine, `cat "$HOME/.claude/projects/`+claudeProjectName(rdir)+`/`+sid+`.jsonl"; cat `+rdir+`/a.txt `+rdir+`/new/deep/n.txt; [ -e `+rdir+`/node_modules/x/late.js ] && echo deps-went; [ -e "$HOME/`+moveStage(dir)+`" ] && echo stage-left; [ -e "$HOME/`+moveStage(dir)+`.landed" ] && echo landed-left; true`)
+	if strings.Contains(landed, `"`+dir) || !strings.Contains(landed, rdir+`/a.txt`) || !strings.Contains(landed, "again") || !strings.Contains(landed, "later") || !strings.HasSuffix(landed, "two\nn") {
 		t.Fatalf("landed there: %q", landed)
+	}
+	if _, err := os.Stat(filepath.Join(home, sentStamp(machine, dir))); err == nil {
+		t.Errorf("the copy-ahead mark is left after the move")
 	}
 
 	// The mirror: what changes there comes here; what is newer here stays.

@@ -134,7 +134,7 @@ export async function moveSession(tab: Tab, session: Session | undefined, to: st
   set(key, { to, phase: "copying" });
 
   // While it works: the folder goes ahead, then the move waits for a quiet moment, copying
-  // what changed every few minutes so what is left for the move stays small.
+  // what changed every minute so what is left for the move stays small.
   const ahead = await copyAhead(key, from, to, dir, name);
   if (ahead === "failed" || c.cancelled) {
     if (control.get(key) === c) {
@@ -157,7 +157,7 @@ export async function moveSession(tab: Tab, session: Session | undefined, to: st
       }
       patch(key, { phase: "waiting", why: busy.why });
       await pause(key, 8_000);
-      if (!c.cancelled && !moving.get(key)?.now && Date.now() - synced > 4 * 60_000) {
+      if (!c.cancelled && !moving.get(key)?.now && Date.now() - synced > 60_000) {
         if ((await copyAhead(key, from, to, dir, name)) === "failed" && c.cancelled) return;
         synced = Date.now();
       }
