@@ -138,6 +138,10 @@ export function DiscoverMachines() {
   return window['go']['main']['App']['DiscoverMachines']();
 }
 
+export function DropPrecopy(arg1, arg2, arg3) {
+  return window['go']['main']['App']['DropPrecopy'](arg1, arg2, arg3);
+}
+
 export function FillSpec(arg1) {
   return window['go']['main']['App']['FillSpec'](arg1);
 }
@@ -164,6 +168,10 @@ export function History(arg1) {
 
 export function Info() {
   return window['go']['main']['App']['Info']();
+}
+
+export function InstallClaude() {
+  return window['go']['main']['App']['InstallClaude']();
 }
 
 export function InstallTmux() {
@@ -220,6 +228,10 @@ export function Machines() {
 
 export function MintClaudeToken() {
   return window['go']['main']['App']['MintClaudeToken']();
+}
+
+export function MirrorOf(arg1, arg2) {
+  return window['go']['main']['App']['MirrorOf'](arg1, arg2);
 }
 
 export function MoveClaudeAccount(arg1, arg2) {
@@ -330,6 +342,10 @@ export function Ports(arg1) {
   return window['go']['main']['App']['Ports'](arg1);
 }
 
+export function PrecopyMove(arg1, arg2, arg3) {
+  return window['go']['main']['App']['PrecopyMove'](arg1, arg2, arg3);
+}
+
 export function Prefs() {
   return window['go']['main']['App']['Prefs']();
 }
@@ -432,6 +448,10 @@ export function RevealPeeked(arg1) {
 
 export function RunLink(arg1) {
   return window['go']['main']['App']['RunLink'](arg1);
+}
+
+export function RunningAgents(arg1, arg2) {
+  return window['go']['main']['App']['RunningAgents'](arg1, arg2);
 }
 
 export function SavePeeked(arg1) {

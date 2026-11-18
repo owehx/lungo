@@ -1,9 +1,9 @@
 // Split panes: each pane is a terminal, positioned by its group's layout. Panes are rendered
 // in one flat list and only moved with CSS, so splitting, resizing or switching tabs never
 // re-mounts a terminal.
-import { memo, useRef } from "react";
-import { AppWindow, SquareArrowOutUpRight, ArrowDownToLine, ArrowUpFromLine, Columns2, Copy, Files, Folder, FolderOpen, GitBranch, Globe, Maximize2, Monitor, MoreVertical, RotateCcw, Rows2, SquareTerminal, X } from "lucide-react";
-import { api, errText, type Port, type Session } from "../lib/api";
+import { memo, useEffect, useRef, useState } from "react";
+import { AppWindow, SquareArrowOutUpRight, ArrowDownToLine, ArrowUpFromLine, Columns2, Copy, Files, Folder, FolderOpen, GitBranch, Globe, Laptop, Maximize2, Monitor, MoreVertical, RotateCcw, Rows2, SquareTerminal, X } from "lucide-react";
+import { api, call, errText, type Port, type Session } from "../lib/api";
 import { showMenu } from "./ContextMenu";
 import { setDragged } from "../lib/drag";
 import { filesOf, openFiles } from "../lib/peek";
@@ -140,6 +140,26 @@ const NO_PORTS: Port[] = [];
 const chip =
   "flex h-[22px] max-w-full min-w-0 items-center gap-1.5 rounded-md border border-line-strong px-2 text-[11.5px] text-muted transition-colors hover:border-[var(--subtle)] hover:text-fg";
 
+/**
+ * The folder on this Mac that follows a session's folder on a machine (the session moved there
+ * from here, see lib/move), or undefined. Looked up again now and then: a move starts or ends one.
+ */
+function useMirror(machine: string | undefined, dir: string | undefined): string | undefined {
+  const [local, setLocal] = useState<string>();
+  useEffect(() => {
+    if (!machine || !dir) return setLocal(undefined);
+    let live = true;
+    const look = () => call<string>("MirrorOf", machine, dir).then((p) => live && setLocal(p || undefined), () => {});
+    look();
+    const t = window.setInterval(look, 30_000);
+    return () => {
+      live = false;
+      window.clearInterval(t);
+    };
+  }, [machine, dir]);
+  return local;
+}
+
 /** Under a pane: the folder it is in and, in a repository, its branch and what has changed. */
 function PaneFooter({ tab }: { tab: Tab }) {
   const folder = paneFolder(tab);
@@ -156,6 +176,7 @@ function PaneFooter({ tab }: { tab: Tab }) {
   const root = repo?.root || tab.cwd || "";
   const up = machines.filter((m) => m.machine.status === "running" || !m.machine.status).map((m) => m.machine.name);
   const state = repo ? [repo.changed ? `${repo.changed} changed` : "clean", repo.ahead ? `${repo.ahead} ahead` : "", repo.behind ? `${repo.behind} behind` : ""].filter(Boolean).join(" · ") : "";
+  const mirror = useMirror(local ? undefined : tab.machine, tab.cwd);
   return (
     <div className="z flex shrink-0 items-center gap-1.5 pr-1.5 pl-1.5" style={{ height: PANE_FOOTER, background: "var(--term-bg)" }}>
       {/* The folder and branch shrink to fit the pane (a long path ran on into the next one). */}
@@ -165,14 +186,16 @@ function PaneFooter({ tab }: { tab: Tab }) {
             side="top"
             align="left"
             trigger={
-              <button title={tab.cwd} className={chip}>
+              <button title={mirror ? `${tab.cwd}\nWhat changes here also comes to this Mac, in ${mirror}` : tab.cwd} className={chip}>
                 <Folder size={12} className="shrink-0 text-subtle" />
                 <span className="truncate">{folder}</span>
+                {mirror && <Laptop size={11} className="shrink-0 text-subtle" />}
               </button>
             }
             items={[
               { label: "Copy path", icon: <Copy size={13} />, onClick: copy(tab.cwd ?? folder) },
               ...(local ? [{ label: "Reveal in Finder", icon: <FolderOpen size={13} />, onClick: () => api.reveal(tab.cwd ?? folder).catch(() => {}) }] : []),
+              ...(mirror ? [{ label: "Show this Mac's copy", icon: <Laptop size={13} />, hint: "kept in step", onClick: () => api.reveal(mirror).catch(() => {}) }] : []),
               "sep" as const,
               { label: "New terminal here", icon: <SquareTerminal size={13} />, hint: `${mod}D`, onClick: here(() => splitPane("row", "shell")) },
               { label: "New Claude session here", icon: <BrandIcon name="claude" size={13} />, onClick: here(() => splitPane("row", "claude")) },

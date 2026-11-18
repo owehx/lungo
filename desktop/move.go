@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"path"
 	"sort"
 	"strings"
@@ -151,8 +152,67 @@ func (a *App) MoveSession(from, session, to, dir string) string {
 		if err != nil {
 			return nil, err
 		}
+		// Off this computer, its folder here follows the session (mirrors.go); home again, it stops.
+		if err := engine.NoteMove(res); err != nil {
+			events.Warnf(r, "This Mac's copy of %s won't follow it: %v", res.Name, err)
+		}
 		return res, nil
 	})
+}
+
+// Precopy is what copying ahead did: Ahead false when this move can't be copied ahead (between
+// two machines, or no rsync on one side), and the move sends everything after the stop.
+type Precopy struct {
+	Ahead bool   `json:"ahead"`
+	ToDir string `json:"toDir"`
+	Bytes int64  `json:"bytes"`
+}
+
+// PrecopyMove copies a session's folder and conversations to another device while the session
+// keeps working, so its move later takes seconds (engine.PrecopyMove). An operation; its result
+// is a Precopy.
+func (a *App) PrecopyMove(from, to, dir string) string {
+	where := to
+	if engine.IsLocal(to) {
+		where = "this computer"
+	}
+	return a.ops.start("move", "Copy "+path.Base(dir)+" to "+where, to, func(ctx context.Context, r events.Reporter) (any, error) {
+		res, err := a.eng.PrecopyMove(ctx, from, to, dir, r)
+		if errors.Is(err, engine.ErrNoPrecopy) {
+			return Precopy{}, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return Precopy{Ahead: true, ToDir: res.ToDir, Bytes: res.Bytes}, nil
+	})
+}
+
+// DropPrecopy forgets what was copied ahead for a move that isn't happening.
+func (a *App) DropPrecopy(from, to, dir string) error {
+	ctx, cancel := context.WithTimeout(a.ctx, 20*time.Second)
+	defer cancel()
+	return a.eng.DropPrecopy(ctx, from, to, dir)
+}
+
+// RunningAgents names the agents a Claude conversation has at work on a device right now.
+func (a *App) RunningAgents(machine, sid string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(a.ctx, 15*time.Second)
+	defer cancel()
+	names, err := a.eng.RunningAgents(ctx, machine, sid)
+	if names == nil {
+		names = []string{}
+	}
+	return names, err
+}
+
+// MirrorOf is the folder on this computer that follows a folder on a machine, or "".
+func (a *App) MirrorOf(machine, dir string) string {
+	m, err := engine.MirrorOf(machine, dir)
+	if err != nil {
+		return ""
+	}
+	return m.Local
 }
 
 // AgentsOn lists the coding agents installed on a machine ("@local": this computer), for

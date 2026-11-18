@@ -76,6 +76,8 @@ export function DeleteMachine(arg1:string,arg2:boolean):Promise<string>;
 
 export function DiscoverMachines():Promise<Array<engine.Candidate>>;
 
+export function DropPrecopy(arg1:string,arg2:string,arg3:string):Promise<void>;
+
 export function FillSpec(arg1:model.Spec):Promise<model.Spec>;
 
 export function FindFile(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Array<engine.RemoteFile>>;
@@ -89,6 +91,8 @@ export function GrowDisk(arg1:string,arg2:number):Promise<string>;
 export function History(arg1:string):Promise<main.HistoryView>;
 
 export function Info():Promise<main.AppInfo>;
+
+export function InstallClaude():Promise<string>;
 
 export function InstallTmux():Promise<string>;
 
@@ -117,6 +121,8 @@ export function MachineHealth():Promise<main.HealthView>;
 export function Machines():Promise<Array<main.MachineView>>;
 
 export function MintClaudeToken():Promise<string>;
+
+export function MirrorOf(arg1:string,arg2:string):Promise<string>;
 
 export function MoveClaudeAccount(arg1:string,arg2:number):Promise<void>;
 
@@ -172,6 +178,8 @@ export function PlanMove(arg1:string,arg2:string,arg3:string):Promise<engine.Mov
 
 export function Ports(arg1:string):Promise<Array<model.Port>>;
 
+export function PrecopyMove(arg1:string,arg2:string,arg3:string):Promise<string>;
+
 export function Prefs():Promise<Record<string, string>>;
 
 export function ProjectAdd(arg1:string):Promise<string>;
@@ -223,6 +231,8 @@ export function Reveal(arg1:string):Promise<void>;
 export function RevealPeeked(arg1:string):Promise<void>;
 
 export function RunLink(arg1:string):Promise<string>;
+
+export function RunningAgents(arg1:string,arg2:string):Promise<Array<string>>;
 
 export function SavePeeked(arg1:string):Promise<string>;
 

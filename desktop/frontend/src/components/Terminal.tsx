@@ -1233,7 +1233,10 @@ export const TerminalView = memo(function TerminalView({ tab, active, focused }:
   const quiet = waiting && seen && !late; // just reconnecting, or just opened from its last screen: no notice yet
   const why = shortWhy(tab.retry?.why);
   const stuck = !!tab.retry && tab.retry.n > 2; // not a blip any more: say why, offer a retry
-  const move = useMoving(tab.key); // the session is on its way to another device: that says so instead
+  const moving = useMoving(tab.key);
+  // The session stopped and is on its way to another device: that says so instead. (While it is
+  // copied ahead it works on here, as always.)
+  const move = moving && (moving.phase === "moving" || moving.phase === "arriving") ? moving : undefined;
   return (
     <div className="absolute inset-0" style={{ background: "var(--term-bg)" }}>
       <div

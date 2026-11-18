@@ -1789,7 +1789,9 @@ export function wireEvents() {
       return { ops: { ...s.ops, [end.op]: { ...c, end, info: { ...c.info, running: false, error: end.error } } } };
     });
     const title = cur?.info.title ?? "Operation";
-    if (end.error) {
+    if (end.error === "cancelled" && quiet.has(end.op)) {
+      /* stopped on purpose by what started it, which says so itself */
+    } else if (end.error) {
       toast("error", `${title} failed`, end.error, { label: "Details", run: () => setState({ modal: { type: "op", id: end.op } }) });
     } else if (!quiet.has(end.op)) {
       toast("success", `${title} — done`);

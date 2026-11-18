@@ -115,6 +115,21 @@ func (t Target) TerminalOptions() []string {
 	return append(t.options(false, false), "-o", "ControlMaster=no", "-o", "ControlPath=none")
 }
 
+// BulkOptions are for sending files: their own connection. Through the shared one a stream
+// of files crawls next to the panes' traffic (measured 1.2–1.6 MB/s shared, ~10 MB/s alone).
+func (t Target) BulkOptions() []string {
+	return append(t.options(true, false), "-o", "ControlMaster=no", "-o", "ControlPath=none")
+}
+
+// BulkSSHCommand is ssh with BulkOptions as one shell string, for rsync -e.
+func (t Target) BulkSSHCommand() string {
+	parts := []string{"ssh"}
+	for _, o := range t.BulkOptions() {
+		parts = append(parts, shellQuote(o))
+	}
+	return strings.Join(parts, " ")
+}
+
 func (t Target) options(batch, mux bool) []string {
 	var o []string
 	if t.Alias == "" {

@@ -1815,6 +1815,28 @@ export namespace main {
 	        this.forgotten = source["forgotten"];
 	    }
 	}
+	export class frame {
+	    x: number;
+	    y: number;
+	    w: number;
+	    h: number;
+	    maximised?: boolean;
+	    fullscreen?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new frame(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.x = source["x"];
+	        this.y = source["y"];
+	        this.w = source["w"];
+	        this.h = source["h"];
+	        this.maximised = source["maximised"];
+	        this.fullscreen = source["fullscreen"];
+	    }
+	}
 
 }
 

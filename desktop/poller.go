@@ -52,6 +52,7 @@ type poller struct {
 	following   atomic.Bool // acting on a /login here (see FollowLocalLogin)
 	nudged      atomic.Bool // a refresh asked for by tmux is waiting to run
 	lastLocal   atomic.Int64
+	mirrors     mirrors // folders here following sessions that moved to machines (mirrors.go)
 }
 
 // begin starts a refresh unless one is already running, and reports whether it did. One
@@ -93,6 +94,8 @@ func (p *poller) run(ctx context.Context) {
 	reapTick := time.NewTicker(5 * time.Minute)
 	localTick := time.NewTicker(2 * time.Second)
 	shareTick := time.NewTicker(500 * time.Millisecond)
+	mirrorTick := time.NewTicker(10 * time.Second)
+	defer mirrorTick.Stop()
 	accountsTick := time.NewTicker(3 * time.Second)
 	defer accountsTick.Stop()
 	defer shareTick.Stop()
@@ -134,6 +137,10 @@ func (p *poller) run(ctx context.Context) {
 				if time.Since(time.Unix(0, p.lastLocal.Load())) > 2500*time.Millisecond {
 					go p.refreshLocal(ctx)
 				}
+			}
+		case <-mirrorTick.C:
+			if p.followsMirrors() {
+				go p.followMirrors(ctx)
 			}
 		case <-shareTick.C:
 			if !p.primary() {

@@ -64,7 +64,7 @@ func claudeProjectName(dir string) string {
 var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]`)
 
 // cmdOn is a command that runs script on a device, with its input and output for the caller
-// to connect.
+// to connect: a stream of files, so on a connection of its own (sshx.BulkOptions).
 func (e *Engine) cmdOn(ctx context.Context, machine, script string) (*exec.Cmd, error) {
 	if IsLocal(machine) {
 		c := exec.CommandContext(ctx, "/bin/sh", "-c", script)
@@ -81,7 +81,7 @@ func (e *Engine) cmdOn(ctx context.Context, machine, script string) (*exec.Cmd, 
 		return nil, err
 	}
 	t := e.Target(m)
-	args := append(t.Options(true), t.Dest(), "--", sshx.RemotePath+"export COPYFILE_DISABLE=1; "+script)
+	args := append(t.BulkOptions(), t.Dest(), "--", sshx.RemotePath+"export COPYFILE_DISABLE=1; "+script)
 	c := exec.CommandContext(ctx, osx.Which("ssh"), args...)
 	c.WaitDelay = 3 * time.Second
 	return c, nil
@@ -303,6 +303,9 @@ func (e *Engine) MoveFolder(ctx context.Context, from, to, dir string, r events.
 	if err != nil {
 		return MoveResult{}, err
 	}
+	if e.quickMove(ctx, plan) {
+		return e.sendQuick(ctx, plan, r, true)
+	}
 	return e.send(ctx, plan, r)
 }
 
@@ -311,17 +314,24 @@ func (e *Engine) MoveFolder(ctx context.Context, from, to, dir string, r events.
 // complete), then its folder and conversations go over as MoveFolder sends them. The
 // conversation is picked up there by its ID. If the send fails, the folder and conversations
 // are still where they were, so the session can be picked up again there.
+//
+// Between this computer and a machine, after PrecopyMove, only what changed since goes after
+// the stop: seconds, however big the folder (movesync.go).
 func (e *Engine) MoveSession(ctx context.Context, from, session, to, dir string, r events.Reporter) (MoveResult, error) {
 	events.Stepf(r, "Getting %s ready", machineLabel(to))
 	plan, err := e.PlanMove(ctx, from, to, dir)
 	if err != nil {
 		return MoveResult{}, err
 	}
+	quick := e.quickMove(ctx, plan)
 	if session != "" {
 		events.Stepf(r, "Stopping it on %s", machineLabel(from))
 		if err := e.KillSession(ctx, from, session); err != nil {
 			return MoveResult{}, err
 		}
+	}
+	if quick {
+		return e.sendQuick(ctx, plan, r, true)
 	}
 	return e.send(ctx, plan, r)
 }
@@ -356,10 +366,7 @@ func (e *Engine) send(ctx context.Context, plan MovePlan, r events.Reporter) (Mo
 	}
 	res.Conversations = count
 	// The conversation to pick up there: the newest one that ran in the folder itself.
-	out, _ := e.shOn(ctx, to, `f=$(ls -t "$HOME/.claude/projects/`+claudeProjectName(plan.ToDir)+`"/*.jsonl 2>/dev/null | head -1); [ -n "$f" ] && basename "$f" .jsonl; true`)
-	if id := strings.TrimSpace(out); sessionID.MatchString(id) {
-		res.Latest = id
-	}
+	res.Latest = e.latestConversation(ctx, to, plan.ToDir)
 	events.Donef(r, "%s is on %s at %s", plan.Name, machineLabel(to), plan.ToDir)
 	return res, nil
 }
@@ -369,21 +376,8 @@ func (e *Engine) send(ctx context.Context, plan MovePlan, r events.Reporter) (Mo
 // at the folder's new place.
 func (e *Engine) moveConversations(ctx context.Context, from, to string, dirs []string, fromAbs, toAbs string) error {
 	sort.Strings(dirs)
-	oldName, newName := claudeProjectName(fromAbs), claudeProjectName(toAbs)
 	stage := ".sky-incoming-" + strconv.FormatInt(time.Now().UnixNano(), 36)
-	land := `set -e; cd "$HOME/.claude/projects" 2>/dev/null || { mkdir -p "$HOME/.claude/projects"; cd "$HOME/.claude/projects"; }
-s=` + sshx.Quote(stage) + `; mkdir -p "$s"; (cd "$s" && ` + tarIn + `)
-for d in "$s"/*; do
-  [ -d "$d" ] || continue
-  b=$(basename "$d"); n=./` + sshx.Quote(newName) + `"${b#` + oldName + `}"
-  mkdir -p "$n"; cp -Rp "$d"/. "$n"/
-  if [ ` + sshx.Quote(fromAbs) + ` != ` + sshx.Quote(toAbs) + ` ]; then
-    # The paths go to perl through the environment, set on find (not with env: on some Macs
-    # "env" in PATH is uv's ~/.local/bin/env, a script to source that runs nothing).
-    OLD=` + sshx.Quote(fromAbs) + ` NEW=` + sshx.Quote(toAbs) + ` find "$n" -name '*.jsonl' -type f -exec perl -pi -e 's/\Q$ENV{OLD}\E/$ENV{NEW}/g' {} +
-  fi
-done
-rm -rf "$s"`
+	land := landScript(`s=`+sshx.Quote(stage)+`; mkdir -p "$s"; (cd "$s" && `+tarIn+`)`, fromAbs, toAbs)
 	names := make([]string, len(dirs))
 	for i, d := range dirs {
 		names[i] = "./" + d // they start with "-": not to be read as tar's options

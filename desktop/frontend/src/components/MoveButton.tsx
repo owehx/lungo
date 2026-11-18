@@ -1,8 +1,8 @@
 // The cloud button on a pane: the session goes to another device (the Mac mini, a cloud
 // machine, this Mac) and carries on there, in the same pane. See lib/move.
-import { Cloud, CloudUpload } from "lucide-react";
+import { Cloud, CloudUpload, Undo2, Zap } from "lucide-react";
 import { type Session } from "../lib/api";
-import { canMove, deviceName, moveSession, useMoving, type Moving } from "../lib/move";
+import { cancelMove, canMove, deviceName, moveNow, moveSession, useMoving, type Moving } from "../lib/move";
 import { LOCAL, machineLabel, tabMachine, useStore, type Tab } from "../lib/store";
 import { cx } from "../lib/util";
 import { LocalIcon, ProviderIcon } from "./Brand";
@@ -15,6 +15,7 @@ const deviceIn = (d: string) => (d === LOCAL ? "this Mac" : machineLabel(d));
 export function MoveButton({ tab, session, className }: { tab: Tab; session?: Session; className?: string }) {
   const machines = useStore((s) => s.machines);
   const move = useMoving(tab.key);
+  const pct = useCopyPct(move?.phase === "copying" ? move.op : undefined);
   const from = tabMachine(tab);
   if (!from || !canMove(tab, session)) return null;
   const up = (status?: string) => status === "running" || !status;
@@ -32,33 +33,73 @@ export function MoveButton({ tab, session, className }: { tab: Tab; session?: Se
   ];
   if (!devices.length) return null;
 
+  const ahead = move && (move.phase === "copying" || move.phase === "waiting"); // still here, still working
   const open = (e: React.MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation();
     const r = e.currentTarget.getBoundingClientRect();
-    const rows: MenuRow[] = [
-      { custom: <div className="px-2 pt-1 pb-1 text-[11px] text-subtle">Move this session to</div> },
-      ...devices.map((d) => ({ label: deviceName(d.id), icon: d.icon, hint: d.hint, disabled: !d.ok, onClick: () => void moveSession(tab, session, d.id) })),
-    ];
+    const rows: MenuRow[] = ahead
+      ? [
+          { custom: <div className="max-w-[260px] px-2 pt-1 pb-1 text-[11px] leading-snug text-subtle">{aheadLine(move, pct)}</div> },
+          {
+            label: "Move now",
+            icon: <Zap size={13} />,
+            hint: move.phase === "waiting" ? "stops what is at work" : "once copied",
+            onClick: () => moveNow(tab.key),
+          },
+          { label: "Don't move", icon: <Undo2 size={13} />, onClick: () => cancelMove(tab) },
+        ]
+      : [
+          { custom: <div className="px-2 pt-1 pb-1 text-[11px] text-subtle">Move this session to</div> },
+          ...devices.map((d) => ({ label: deviceName(d.id), icon: d.icon, hint: d.hint, disabled: !d.ok, onClick: () => void moveSession(tab, session, d.id) })),
+        ];
     showMenu({ clientX: r.right, clientY: r.bottom + 4 }, rows);
   };
   return (
     <button
-      title={move ? `Moving to ${deviceIn(move.to)}…` : `Move to another device: it carries on there (${devices.map((d) => deviceName(d.id)).join(", ")})`}
-      disabled={!!move}
+      title={move ? (ahead ? aheadLine(move, pct) : `Moving to ${deviceIn(move.to)}…`) : `Move to another device: it carries on there (${devices.map((d) => deviceName(d.id)).join(", ")})`}
+      disabled={!!move && !ahead}
       onClick={open}
       onMouseDown={(e) => e.stopPropagation()} // not the start of dragging the pane
-      className={cx("flex items-center justify-center rounded text-subtle transition-colors hover:bg-active hover:text-fg disabled:hover:bg-transparent", move && "text-accent", className ?? "size-5")}
+      className={cx(
+        "flex items-center justify-center gap-1 rounded text-subtle transition-colors hover:bg-active hover:text-fg disabled:hover:bg-transparent",
+        move && "text-accent",
+        className ?? "h-5 min-w-5",
+        move?.phase === "copying" && pct !== undefined && "px-1",
+      )}
     >
-      {move ? <CloudUpload size={13} className="sky-lift" /> : <Cloud size={13} />}
+      {move ? <CloudUpload size={13} className={cx(move.phase !== "waiting" && "sky-lift")} /> : <Cloud size={13} />}
+      {move?.phase === "copying" && pct !== undefined && <span className="text-[10.5px] tabular-nums">{pct}%</span>}
     </button>
   );
+}
+
+/** Where a move that is going ahead of the session is, in a line. */
+function aheadLine(m: Moving, pct?: number): string {
+  const where = deviceIn(m.to);
+  if (m.phase === "copying") {
+    return `Copying to ${where}${pct !== undefined ? ` · ${pct}%` : ""}. It keeps working here meanwhile${m.now ? ", and moves once copied." : "."}`;
+  }
+  return `Copied to ${where}. It moves at the first quiet moment${m.why ? ` (now: ${m.why.charAt(0).toLowerCase()}${m.why.slice(1)})` : ""}, in seconds.`;
+}
+
+/** How far the copy is, from its last progress line ("1.2 GB of 8.2 GB · 15%"). */
+function useCopyPct(op?: string): number | undefined {
+  return useStore((s) => {
+    const events = op ? s.ops[op]?.events : undefined;
+    if (!events) return undefined;
+    for (let i = events.length - 1; i >= 0; i--) {
+      const m = /(\d+)%$/.exec(events[i].message);
+      if (m) return Number(m[1]);
+    }
+    return undefined;
+  });
 }
 
 /** Over the pane while its session is on its way: where to, and what is happening now. */
 export function MoveOverlay({ move }: { move: Moving }) {
   const events = useStore((s) => (move.op ? s.ops[move.op]?.events : undefined));
   const last = events?.filter((e) => e.message).slice(-1)[0]?.message;
-  const step = move.arriving ? `Starting on ${deviceIn(move.to)}` : (last ?? `Getting ${deviceIn(move.to)} ready`);
+  const step = move.phase === "arriving" ? `Starting on ${deviceIn(move.to)}` : (last ?? `Getting ${deviceIn(move.to)} ready`);
   return (
     <div className="z anim-fade pointer-events-none absolute inset-0 z-20 flex items-center justify-center px-6">
       <div className="flex max-w-full flex-col items-center gap-2 text-center">
