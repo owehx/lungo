@@ -58,6 +58,10 @@ type Session struct {
 	Agent string `json:"agent,omitempty"`
 	// Stale: as last seen; its machine (or this computer's tmux) can't be read right now.
 	Stale bool `json:"stale,omitempty"`
+	// Limit: Claude stopped at a usage limit, with these words, at LimitAt (read from its
+	// conversation; see limits.go). The session is "waiting" with this as its message.
+	Limit   string    `json:"limit,omitempty"`
+	LimitAt time.Time `json:"limitAt,omitzero"`
 }
 
 // Key identifies a session across machines.
@@ -71,7 +75,7 @@ func (s Session) Key() string { return s.Machine + "/" + s.Name }
 // processes per pane, every five seconds). It runs in the machine's login shell, zsh as
 // often as sh or bash: the names are split by a command substitution, which all three split
 // alike (zsh doesn't split a plain $N).
-const listSessionsCmd = `echo "@@sky-login@@ $(date +%s) $(stat -c %Y ~/.claude/.oauth-token 2>/dev/null || stat -f %m ~/.claude/.oauth-token 2>/dev/null)"; tmux list-sessions -F '#{session_name}	#{session_created}	#{window_activity}	#{session_attached}	#{session_windows}	#{pane_current_path}	#{pane_current_command}	#{host_short}	#{pane_title}	#{?mouse_any_flag,m,}#{?alternate_on,a,}#{?@sky-keys,k,}' 2>/dev/null; ` + branchesCmd + ` echo '@@sky-status@@'; find ~/.skybuild/status -name '*.json' -exec cat {} + 2>/dev/null; P=$(ps -A -o pid=,ppid=,etime=,args= 2>/dev/null); L=$(tmux list-panes -a -F '#{session_name}	#{pane_current_command}	#{pane_pid}' 2>/dev/null); H=$(printf '%s\n@@ps@@\n%s\n' "$L" "$P" | awk -v home="$HOME" '` + agentPanesAwk + `'); N=${H##*@@sky-cap@@}; printf '%s' "${H%@@sky-cap@@*}"; set --; for s in $(echo "$N"); do [ $# -gt 0 ] && set -- "$@" ';'; set -- "$@" display-message -p -t "=$s:" '@@sky-screen@@#{session_name}' ';' capture-pane -p -t "=$s:"; done; echo '@@sky-screens@@'; [ $# -gt 0 ] && tmux "$@" 2>/dev/null; true`
+const listSessionsCmd = `echo "@@sky-login@@ $(date +%s) $(stat -c %Y ~/.claude/.oauth-token 2>/dev/null || stat -f %m ~/.claude/.oauth-token 2>/dev/null)"; tmux list-sessions -F '#{session_name}	#{session_created}	#{window_activity}	#{session_attached}	#{session_windows}	#{pane_current_path}	#{pane_current_command}	#{host_short}	#{pane_title}	#{?mouse_any_flag,m,}#{?alternate_on,a,}#{?@sky-keys,k,}' 2>/dev/null; ` + branchesCmd + ` echo '@@sky-status@@'; find ~/.skybuild/status -name '*.json' -exec cat {} + 2>/dev/null; P=$(ps -A -o pid=,ppid=,etime=,args= 2>/dev/null); L=$(tmux list-panes -a -F '#{session_name}	#{pane_current_command}	#{pane_pid}' 2>/dev/null); H=$(printf '%s\n@@ps@@\n%s\n' "$L" "$P" | awk -v home="$HOME" '` + agentPanesAwk + `'); N=${H##*@@sky-cap@@}; printf '%s' "${H%@@sky-cap@@*}"; set --; for s in $(echo "$N"); do [ $# -gt 0 ] && set -- "$@" ';'; set -- "$@" display-message -p -t "=$s:" '@@sky-screen@@#{session_name}' ';' capture-pane -p -t "=$s:"; done; echo '@@sky-screens@@'; [ $# -gt 0 ] && tmux "$@" 2>/dev/null; echo '@@sky-limits@@'; ` + limitScript + `; true`
 
 // agentPanesAwk reads the panes (session, command in front, shell pid), then "@@ps@@" and
 // the process table, and prints a "@@sky-pane@@session<TAB>process<TAB>conversation status"
@@ -140,6 +144,13 @@ func (e *Engine) sessionsOn(ctx context.Context, m *model.Machine) ([]Session, e
 }
 
 func parseSessions(machine, out string) []Session {
+	// Last, what each Claude's conversation says about a usage limit (after the screens, which
+	// may show anything: the last marker is the real one).
+	var limits map[string]limitFacts
+	if i := strings.LastIndex(out, "@@sky-limits@@"); i >= 0 {
+		limits = parseLimits(out[i+len("@@sky-limits@@"):])
+		out = out[:i]
+	}
 	// "@@sky-login@@ <now> <when the login file changed>", from machines (not this computer).
 	var now, loginAt int64
 	if rest, ok := strings.CutPrefix(out, "@@sky-login@@"); ok {
@@ -332,6 +343,9 @@ func parseSessions(machine, out string) []Session {
 		}
 		if s.Claude {
 			s.Agent = "claude"
+			if lf, ok := limits[s.Name]; ok {
+				applyLimit(&s, lf, record[s.Name][1] == "busy" || record[s.Name][1] == "shell")
+			}
 		}
 		res = append(res, s)
 	}

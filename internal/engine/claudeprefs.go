@@ -117,5 +117,5 @@ func SetClaudePreciseScroll(on bool) error {
 func (e *Engine) RestartClaude(ctx context.Context, machine, session, sid, flags string) error {
 	ctx, cancel := context.WithTimeout(ctx, 40*time.Second)
 	defer cancel()
-	return e.restartClaude(ctx, machine, session, sid, flags, "")
+	return e.restartClaude(ctx, machine, session, sid, flags, "", "")
 }

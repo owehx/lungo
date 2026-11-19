@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -472,8 +473,19 @@ func (e *Engine) UseClaudeAccount(ctx context.Context, key string, r events.Repo
 }
 
 func (e *Engine) useAccount(ctx context.Context, key string, byHand bool, r events.Reporter) error {
+	name, err := e.setActiveAccount(key, byHand)
+	if err != nil {
+		return err
+	}
+	e.signInEverywhere(ctx, name, r)
+	return nil
+}
+
+// setActiveAccount makes an account the one sessions use (not signing anything in yet), and
+// says its name.
+func (e *Engine) setActiveAccount(key string, byHand bool) (string, error) {
 	var name string
-	if err := config.Update(func(c *config.Config) error {
+	err := config.Update(func(c *config.Config) error {
 		a, _, err := e.findAccount(c, key)
 		if err != nil {
 			return err
@@ -487,11 +499,8 @@ func (e *Engine) useAccount(ctx context.Context, key string, byHand bool, r even
 			c.Settings.ClaudeSource = ""
 		}
 		return nil
-	}); err != nil {
-		return err
-	}
-	e.signInEverywhere(ctx, name, r)
-	return nil
+	})
+	return name, err
 }
 
 // signInEverywhere signs the sessions on this computer and every machine in as the active
@@ -500,6 +509,11 @@ func (e *Engine) signInEverywhere(ctx context.Context, name string, r events.Rep
 	if err := e.syncLocalLogin(ctx); err != nil {
 		events.Warnf(r, "Sessions on this computer keep their login: %v", err)
 	}
+	e.signInMachines(ctx, name, r)
+}
+
+// signInMachines signs every machine in as the active account, name.
+func (e *Engine) signInMachines(ctx context.Context, name string, r events.Reporter) {
 	events.Stepf(r, "Signing machines in as %s", name)
 	res := e.Sync(ctx, nil, syncer.Options{Only: []string{syncer.ItemClaudeLogin}}, r)
 	n := 0
@@ -614,26 +628,49 @@ func (e *Engine) ClaudeTick(ctx context.Context, sessions []Session, r events.Re
 			sessions = append(sessions, local...)
 		}
 	}
+	now := time.Now()
 	var blocked []Session // on machines, resumed here
+	var stopped []Session // every session stopped at a limit
+	var fresh []Session   // just stopped at a limit by the active account's login
 	limitSeen := false    // a session on the active account's login shows a limit
 	for _, s := range sessions {
 		if !s.Claude || s.State != "waiting" || !IsLimitMessage(s.Message) {
 			continue
 		}
+		stopped = append(stopped, s)
+		onActive := !s.LoginAt.IsZero() && !s.OldLogin
 		if !IsLocal(s.Machine) {
 			blocked = append(blocked, s)
 			limitSeen = true
-		} else if !s.LoginAt.IsZero() && !s.OldLogin {
+		} else if onActive {
 			limitSeen = true
 		}
+		if onActive && s.FreshLimit(now) {
+			fresh = append(fresh, s)
+		}
+	}
+	rotating := c.Settings.ClaudeAutoOn() && active != "" && !c.Settings.ClaudeFollowLogin()
+
+	// A session the active account's login just stopped says the account is used up, sooner
+	// and surer than a check (a check asks a small model, which a limit on one model doesn't
+	// stop): it is marked so, until the reset the message gives, and the move happens now,
+	// without waiting on checks. Should the next account be used up too, its sessions stop
+	// at once and say so, and the next pass moves on again.
+	marked := false
+	if rotating && len(fresh) > 0 {
+		if st, ok := limitedFrom(statuses[active], fresh[0], now); ok {
+			statuses[active] = st
+			_ = claudeacct.Save(active, st)
+			events.Infof(r, "%s stopped at a limit: %s", fresh[0].Name, fresh[0].Limit)
+		}
+		marked = true
 	}
 
 	// Check the accounts that are due, all at once (one at a time, a few slow ones used up
 	// the pass's time and the rest timed out).
-	now := time.Now()
 	var due []string
 	for _, v := range views {
-		if v.HasToken && !v.Account.Disabled && dueForCheck(statuses[v.Account.ID], v.Account.ID == active, limitSeen, now) {
+		if !marked && v.HasToken && !v.Account.Disabled && dueForCheck(statuses[v.Account.ID], v.Account.ID == active, limitSeen, now) {
 			due = append(due, v.Account.ID)
 		}
 	}
@@ -657,7 +694,7 @@ func (e *Engine) ClaudeTick(ctx context.Context, sessions []Session, r events.Re
 	}
 	wg.Wait()
 
-	if !c.Settings.ClaudeAutoOn() || active == "" || c.Settings.ClaudeFollowLogin() {
+	if !rotating {
 		return res, nil // following this computer's login: /login switches, not sky
 	}
 	has := func(id string) bool { return claudeacct.Token(id) != "" }
@@ -690,16 +727,32 @@ func (e *Engine) ClaudeTick(ctx context.Context, sessions []Session, r events.Re
 	}
 
 	if target == active {
-		// Staying put. A session still showing a limit is running on an account we already
-		// moved away from: resume it (once per half hour, in case it can't help).
+		// Staying put, on an account that works.
 		if cur.State == claudeacct.StateOK || cur.State == claudeacct.StateWarning {
-			for _, s := range blocked {
-				if !claudeacct.Attempt("resume:"+s.Key(), 30*time.Minute) {
-					continue
-				}
-				if err := e.resumeSession(ctx, s); err == nil {
-					res.Restarted++
-					events.Infof(r, "Resumed %s on %s", s.Name, s.Machine)
+			for _, s := range stopped {
+				switch {
+				case IsLocal(s.Machine) && s.OldLogin:
+					// Restarted onto this account when it is idle (MoveToNewLogin).
+				case !IsLocal(s.Machine) && (s.OldLogin || s.LoginAt.IsZero()):
+					// On a machine, still on an account we already moved away from: resume it
+					// (once per half hour, in case it can't help).
+					if !claudeacct.Attempt("resume:"+s.Key(), 30*time.Minute) {
+						continue
+					}
+					if err := e.resumeSession(ctx, s); err == nil {
+						res.Restarted++
+						events.Infof(r, "Resumed %s on %s", s.Name, s.Machine)
+					}
+				case limitOver(s, now):
+					// Stopped at a limit that is over (or from before this Claude started), and
+					// nothing went on: tell it to.
+					if !claudeacct.Attempt("nudge:"+s.Key()+":"+strconv.FormatInt(s.LimitAt.Unix(), 10), 30*time.Minute) {
+						continue
+					}
+					if err := e.sendContinue(ctx, s, continueReset); err == nil {
+						res.Restarted++
+						events.Infof(r, "Told %s to go on", s.Name)
+					}
 				}
 			}
 		}
@@ -729,17 +782,96 @@ func (e *Engine) ClaudeTick(ctx context.Context, sessions []Session, r events.Re
 		res.Reason = claudeacct.Describe(cur)
 		events.Stepf(r, "%s: %s. Switching machines to %s", res.From, res.Reason, res.To)
 	}
-	if err := e.useAccount(ctx, target, false, r); err != nil {
+	toName, err := e.setActiveAccount(target, false)
+	if err != nil {
 		return res, err
 	}
+	// Every session goes on, on the new account, right away: here the ones stopped at the
+	// limit and the idle ones (as MoveToNewLogin does when it next runs), while the machines
+	// are signed in, and then theirs stopped at the limit.
+	if err := e.syncLocalLogin(ctx); err != nil {
+		events.Warnf(r, "Sessions on this computer keep their login: %v", err)
+	} else if local, err := e.LocalSessions(ctx); err == nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			moved := e.MoveToNewLogin(ctx, local)
+			mu.Lock()
+			res.Restarted += len(moved)
+			mu.Unlock()
+		}()
+	}
+	e.signInMachines(ctx, toName, r)
 	for _, s := range blocked {
 		claudeacct.Attempt("resume:"+s.Key(), 0)
-		if err := e.resumeSession(ctx, s); err == nil {
-			res.Restarted++
-			events.Infof(r, "Resumed %s on %s with %s", s.Name, s.Machine, res.To)
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := e.resumeSession(ctx, s); err == nil {
+				mu.Lock()
+				res.Restarted++
+				mu.Unlock()
+				events.Infof(r, "Resumed %s on %s with %s", s.Name, s.Machine, res.To)
+			}
+		}()
 	}
+	wg.Wait()
 	return res, nil
+}
+
+// limitedFrom is the account's status as a session stopped by its limit tells it: used up
+// until the reset the message names (an hour when it names none). Not ok: that reset has
+// passed, so the limit is over.
+func limitedFrom(cur claudeacct.Status, s Session, now time.Time) (claudeacct.Status, bool) {
+	reset := ParseReset(s.Limit, s.LimitAt)
+	if reset.IsZero() {
+		reset = now.Add(time.Hour)
+	}
+	if !reset.After(now) {
+		return cur, false
+	}
+	if cur.State == claudeacct.StateLimited && cur.ResetsAt.After(now) {
+		return cur, true // already known
+	}
+	st := cur
+	st.State, st.Message, st.ResetsAt, st.CheckedAt = claudeacct.StateLimited, s.Limit, reset, now
+	st.LimitType = limitWindow(s.Limit)
+	return st, true
+}
+
+// limitOver says whether a session stopped at a limit could go on now: its limit's reset is a
+// few minutes past (Claude goes on by itself at the reset when it was left to wait for it), or
+// it was stopped before the Claude in it now started, a while ago (restarted, and not told).
+func limitOver(s Session, now time.Time) bool {
+	reset := ParseReset(s.Limit, s.LimitAt)
+	if reset.IsZero() {
+		reset = s.LimitAt.Add(time.Hour)
+	}
+	if now.After(reset.Add(3 * time.Minute)) {
+		return true
+	}
+	return !s.ClaudeSince.IsZero() && s.LimitAt.Before(s.ClaudeSince.Add(-2*time.Second)) && now.Sub(s.ClaudeSince) > time.Minute
+}
+
+// sendContinue sends a session stopped at a limit its next prompt, msg, if it is at its prompt
+// with nothing typed.
+func (e *Engine) sendContinue(ctx context.Context, s Session, msg string) error {
+	script := `s=` + sshx.Quote(s.Name) + `; msg=` + sshx.Quote(msg) + `
+tmux has-session -t "=$s" 2>/dev/null || { echo "no such session"; exit 1; }
+p=$(tmux capture-pane -p -t "=$s:" 2>/dev/null)
+case "$p" in *"esc to interrupt"*|*"❯ 1."*|*"Enter to confirm"*) echo busy; exit 3;; esac
+at=$(printf '%s\n' "$p" | grep -n '❯' | tail -1)
+draft=$(printf '%s' "${at#*:}" | sed 's/^.*❯//' | sed "s/^$(printf '\302\240')//; s/^ //; s/[[:space:]]*$//")
+case "$draft" in "Try \""*) draft="";; esac
+[ -n "$draft" ] && { echo busy; exit 3; }
+tmux send-keys -t "=$s:" -l "$msg"; sleep 0.5; tmux send-keys -t "=$s:" Enter`
+	c, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	out, err := e.runOn(c, s.Machine, script)
+	if err != nil && strings.TrimSpace(out) == "busy" {
+		return errBusy
+	}
+	return err
 }
 
 // dueForCheck says whether an account's usage should be checked now. A check is a small
@@ -793,33 +925,10 @@ func pickNext(accts []*model.ClaudeAccount, statuses map[string]claudeacct.Statu
 	return nil
 }
 
-// resumeSession restarts a Claude session stuck on a limit prompt so it picks up the new
-// token, resuming the same conversation (by its session ID when the hook recorded one).
+// resumeSession restarts a Claude session on a machine stopped at a limit so it picks up the
+// new token, resuming the same conversation, and tells it to go on.
 func (e *Engine) resumeSession(ctx context.Context, s Session) error {
-	m, err := e.Machine(s.Machine)
-	if err != nil {
-		return err
-	}
-	q := sshx.Quote(s.Name)
-	script := `s=` + q + `
-pane=$(tmux display -p -t "$s" '#{pane_pid}') || exit 1
-args=$(ps -A -o ppid=,args= | awk -v p="$pane" '$1==p {$1=""; print}' | grep -m1 claude)
-sid=$(sed -n 's/.*"sid":"\([^"]*\)".*/\1/p' "$HOME/.skybuild/status/$s.json" 2>/dev/null)
-tmux send-keys -t "$s" Escape; sleep 0.6
-tmux send-keys -t "$s" C-c; sleep 0.4; tmux send-keys -t "$s" C-c; sleep 2
-case "$(tmux display -p -t "$s" '#{pane_current_command}')" in *claude*|node|[0-9]*.[0-9]*.[0-9]*) echo still-running; exit 1;; esac
-flags=""
-case "$args" in *--dangerously-skip-permissions*) flags=" --dangerously-skip-permissions";; esac
-if [ -n "$sid" ]; then tmux send-keys -t "$s" "claude --resume $sid$flags" Enter; else tmux send-keys -t "$s" "claude --continue$flags" Enter; fi
-# The session was already running in this folder, so answer Claude's folder-trust prompt
-# (it asks again every time in a home directory).
-for i in 1 2 3 4 5 6 7 8; do
-  sleep 1
-  if tmux capture-pane -p -t "$s" | grep -q "trust this folder"; then tmux send-keys -t "$s" Down Enter; break; fi
-  tmux capture-pane -p -t "$s" | grep -q "esc to interrupt\|? for shortcuts" && break
-done`
-	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	c, cancel := context.WithTimeout(ctx, 75*time.Second)
 	defer cancel()
-	_, err = sshx.RunInput(ctx, e.Target(m), "bash -s", strings.NewReader(script))
-	return err
+	return e.restartClaude(c, s.Machine, s.Name, s.SID, s.Flags, "limit", continueMoved)
 }

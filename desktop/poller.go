@@ -52,7 +52,8 @@ type poller struct {
 	following   atomic.Bool // acting on a /login here (see FollowLocalLogin)
 	nudged      atomic.Bool // a refresh asked for by tmux is waiting to run
 	lastLocal   atomic.Int64
-	mirrors     mirrors // folders here following sessions that moved to machines (mirrors.go)
+	limitKick   atomic.Int64 // when a session stopped at a limit last ran a rotation pass early
+	mirrors     mirrors      // folders here following sessions that moved to machines (mirrors.go)
 }
 
 // begin starts a refresh unless one is already running, and reports whether it did. One
@@ -137,6 +138,7 @@ func (p *poller) run(ctx context.Context) {
 				if time.Since(time.Unix(0, p.lastLocal.Load())) > 2500*time.Millisecond {
 					go p.refreshLocal(ctx)
 				}
+				p.kickOnLimit(ctx)
 			}
 		case <-mirrorTick.C:
 			if p.followsMirrors() {
@@ -462,6 +464,22 @@ func (p *poller) refresh(ctx context.Context) SessionsView {
 	return p.current()
 }
 
+// kickOnLimit runs a rotation pass now, not at the next minute's, when a session was just
+// stopped at a limit by the account it is on (at most every 15 seconds): the account is used
+// up, and the session goes on with the next one in seconds (see ClaudeTick).
+func (p *poller) kickOnLimit(ctx context.Context) {
+	now := time.Now()
+	for _, s := range p.publishedSessions() {
+		if s.FreshLimit(now) && !s.OldLogin && !s.LoginAt.IsZero() {
+			if now.UnixNano()-p.limitKick.Load() > int64(15*time.Second) {
+				p.limitKick.Store(now.UnixNano())
+				go p.claude(ctx)
+			}
+			return
+		}
+	}
+}
+
 // relogin moves sessions still on a login the machines have switched off (an account at its
 // limit) onto the current one, with their conversations, as soon as each is idle. Sessions
 // on this computer follow the machines' account too.
@@ -503,6 +521,9 @@ func (p *poller) notify(list []engine.Session) {
 			continue
 		}
 		switch {
+		case s.State == "waiting" && s.Limit != "":
+			// Stopped at a usage limit: the rotation moves it to the next account and it goes
+			// on (the switch is announced), so nothing needs you yet.
 		case s.State == "waiting":
 			body := s.Message
 			if body == "" {

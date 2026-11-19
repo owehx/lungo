@@ -263,7 +263,7 @@ func TestLocalSessionsOldLogin(t *testing.T) {
 	out := by["shell-out"]
 	os.MkdirAll(filepath.Join(home, ".claude", "projects", "p"), 0o700)
 	os.WriteFile(filepath.Join(home, ".claude", "projects", "p", sid+".jsonl"), []byte("{}\n"), 0o600)
-	if err := e.restartClaude(ctx, LocalMachine, out.Name, sid, "", ""); err != nil {
+	if err := e.restartClaude(ctx, LocalMachine, out.Name, sid, "", "", ""); err != nil {
 		t.Fatal(err, must(localSh(ctx, `tmux display -p -t "=shell-out:" '#{pane_current_command}'; tmux capture-pane -p -t "=shell-out:" | grep .`)))
 	}
 	screen := must(localSh(ctx, `tmux capture-pane -p -t "=shell-out:"`))

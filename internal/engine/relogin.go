@@ -79,9 +79,13 @@ func (e *Engine) MoveToNewLogin(ctx context.Context, sessions []Session) []Sessi
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			c, cancel := context.WithTimeout(ctx, 45*time.Second)
+			c, cancel := context.WithTimeout(ctx, 75*time.Second)
 			defer cancel()
-			if err := e.restartClaude(c, s.Machine, s.Name, s.SID, s.Flags, how); err == nil {
+			msg := ""
+			if how == "limit" {
+				msg = continueMoved // it stopped at the old login's limit: go on with the new one
+			}
+			if err := e.restartClaude(c, s.Machine, s.Name, s.SID, s.Flags, how, msg); err == nil {
 				mu.Lock()
 				moved = append(moved, s)
 				mu.Unlock()
@@ -97,27 +101,35 @@ var errBusy = errors.New("busy")
 
 // restartClaude is RestartClaude with a check first. when is "" (restart now), "idle"
 // (only if Claude is at its prompt with nothing typed and no key pressed for a minute and
-// a half) or "limit" (only if it shows a limit prompt).
-func (e *Engine) restartClaude(ctx context.Context, machine, session, sid, flags, when string) error {
-	check := ""
-	switch when {
-	case "idle":
-		// Busy when Claude works or asks something, or when a key was pressed in the last 90
-		// seconds. Text left in the input (a draft) is kept: it is typed back once Claude is up
-		// again. A draft longer than one line counts as busy.
-		check = `last=$(tmux list-clients -t "=$s" -F '#{client_activity}' 2>/dev/null | sort -n | tail -1); now=$(date +%s)
-[ -n "$last" ] && [ $((now - last)) -lt 90 ] && { echo busy; exit 3; }
-p=$(tmux capture-pane -p -t "=$s:" 2>/dev/null)
-case "$p" in *"esc to interrupt"*|*"❯ 1."*|*"Enter to confirm"*) echo busy; exit 3;; esac
-at=$(printf '%s\n' "$p" | grep -n '❯' | tail -1)
+// a half) or "limit" (Claude stopped at a usage limit: only if it isn't working). Once
+// Claude is up again, msg (if any) is sent to it as the next prompt, unless a draft was
+// typed back.
+func (e *Engine) restartClaude(ctx context.Context, machine, session, sid, flags, when, msg string) error {
+	// Text left in the input (a draft) is kept: it is typed back once Claude is up again. A
+	// draft longer than one line counts as busy.
+	const draft = `at=$(printf '%s\n' "$p" | grep -n '❯' | tail -1)
 n=${at%%:*}
 draft=$(printf '%s' "${at#*:}" | sed 's/^.*❯//' | sed "s/^$(printf '\302\240')//; s/^ //; s/[[:space:]]*$//")
 case "$draft" in "Try \""*) draft="";; esac
 if [ -n "$draft" ]; then case "$(printf '%s\n' "$p" | sed -n "$((n + 1))p")" in *─*) ;; *) echo busy; exit 3;; esac; fi
 `
+	check := ""
+	switch when {
+	case "idle":
+		// Busy when Claude works or asks something, or when a key was pressed in the last 90
+		// seconds.
+		check = `last=$(tmux list-clients -t "=$s" -F '#{client_activity}' 2>/dev/null | sort -n | tail -1); now=$(date +%s)
+[ -n "$last" ] && [ $((now - last)) -lt 90 ] && { echo busy; exit 3; }
+p=$(tmux capture-pane -p -t "=$s:" 2>/dev/null)
+case "$p" in *"esc to interrupt"*|*"❯ 1."*|*"Enter to confirm"*) echo busy; exit 3;; esac
+` + draft
 	case "limit":
+		// Stopped at a limit: at its prompt, or waiting for the reset by itself ("continuing
+		// automatically… esc to cancel"), or on an older Claude's limit menu (no draft there).
 		check = `p=$(tmux capture-pane -p -t "=$s:" 2>/dev/null)
-printf '%s' "$p" | grep -qi 'limit' || { echo busy; exit 3; }
+case "$p" in *"esc to interrupt"*) echo busy; exit 3;; esac
+case "$p" in *"❯ 1."*|*"Enter to confirm"*) ;; *)
+` + draft + `;; esac
 `
 	}
 	f := ""
@@ -150,15 +162,16 @@ else echo "can't tell which conversation this is"; exit 4; fi
 `
 	}
 	shell := `zsh|bash|fish|sh|dash|-zsh|-bash`
-	script := `s=` + sshx.Quote(session) + `; draft=""
+	script := `s=` + sshx.Quote(session) + `; draft=""; msg=` + sshx.Quote(msg) + `
 tmux has-session -t "=$s" 2>/dev/null || { echo "no such session"; exit 1; }
 ` + check + pick + `tmux send-keys -t "=$s:" Escape; sleep 0.6
 tmux send-keys -t "=$s:" C-c; sleep 0.4; tmux send-keys -t "=$s:" C-c
 i=0; while [ $i -lt 16 ]; do sleep 0.5; case "$(tmux display -p -t "=$s:" '#{pane_current_command}')" in ` + shell + `) break;; esac; i=$((i+1)); done
 case "$(tmux display -p -t "=$s:" '#{pane_current_command}')" in ` + shell + `) ;; *) echo "Claude is still running in it"; exit 1;; esac
 tmux send-keys -t "=$s:" "$line" Enter
-i=0; while [ $i -lt 16 ]; do sleep 0.5; p=$(tmux capture-pane -p -t "=$s:" 2>/dev/null); case "$p" in *"trust this folder"*) if printf %s "$p" | grep -q "❯.*Yes"; then tmux send-keys -t "=$s:" Enter; else tmux send-keys -t "=$s:" Down Enter; fi; break;; *"? for shortcuts"*|*"shift+tab to cycle"*|*"esc to interrupt"*) break;; esac; i=$((i+1)); done
-if [ -n "$draft" ]; then sleep 1; tmux send-keys -t "=$s:" -l "$draft"; fi
+` + awaitPrompt + `
+if [ -n "$draft" ]; then sleep 1; tmux send-keys -t "=$s:" -l "$draft"
+elif [ -n "$msg" ] && [ -n "$up" ]; then sleep 1; tmux send-keys -t "=$s:" -l "$msg"; sleep 0.5; tmux send-keys -t "=$s:" Enter; fi
 true`
 	out, err := e.runOn(ctx, machine, script)
 	if err != nil {
@@ -173,6 +186,11 @@ true`
 	}
 	return nil
 }
+
+// awaitPrompt waits (up to half a minute: a long conversation takes a while to load) for
+// Claude, just started in session $s, to be ready for a prompt; up is set once it is. Claude's
+// folder-trust question is answered yes on the way: the session was running in this folder.
+const awaitPrompt = `up=""; trusted=""; i=0; while [ $i -lt 60 ]; do sleep 0.5; p=$(tmux capture-pane -p -t "=$s:" 2>/dev/null); case "$p" in *"trust this folder"*) if [ -z "$trusted" ]; then trusted=1; if printf %s "$p" | grep -q "❯.*Yes"; then tmux send-keys -t "=$s:" Enter; else tmux send-keys -t "=$s:" Down Enter; fi; fi;; *"? for shortcuts"*|*"shift+tab to cycle"*|*"esc to interrupt"*) up=1; break;; esac; i=$((i+1)); done`
 
 // LoginSummary names sessions in a sentence: "api, web and 2 more".
 func LoginSummary(list []Session) string {

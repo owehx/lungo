@@ -366,6 +366,11 @@ func (e *Engine) LocalSessions(ctx context.Context) ([]Session, error) {
 		if s.State == "" {
 			s.State = "idle"
 		}
+		if rec.StartedAt > 0 {
+			s.ClaudeSince = time.UnixMilli(rec.StartedAt)
+		}
+		// Stopped at a usage limit: its conversation says so (see limits.go).
+		applyLimit(s, localLimit(s.SID), rec.Status == "busy" || rec.Status == "shell")
 	}
 	return sessions, nil
 }
@@ -376,6 +381,7 @@ type claudeRecord struct {
 	Name            string `json:"name"`
 	Status          string `json:"status"`
 	StatusUpdatedAt int64  `json:"statusUpdatedAt"`
+	StartedAt       int64  `json:"startedAt"` // when this Claude started (ms)
 }
 
 func readClaudeRecord(pid int) claudeRecord {
