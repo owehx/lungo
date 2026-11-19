@@ -96,7 +96,10 @@ func (p *claudeProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// Only Claude's own requests are sent with the pool's accounts; anything else (an API key,
 	// the login's profile) goes on as it came.
-	pooled := strings.HasPrefix(r.URL.Path, "/v1/messages") && strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")
+	// Only a request already signed in with one of the pool's tokens (the wrapper starts Claude
+	// with the active one) is sent with the pool's accounts: another program here can't spend
+	// them through the proxy.
+	pooled := strings.HasPrefix(r.URL.Path, "/v1/messages") && poolToken(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 	tried := map[string]bool{}
 	var refused *http.Response
 	var refusedBody []byte
@@ -244,6 +247,23 @@ func (p *claudeProxy) account(tried map[string]bool) (string, string) {
 		}
 	}
 	return next, t
+}
+
+// poolToken reports whether a token is one of the pool's accounts'.
+func poolToken(tok string) bool {
+	if tok == "" {
+		return false
+	}
+	c, err := config.Load()
+	if err != nil {
+		return false
+	}
+	for _, a := range c.ClaudeAccounts {
+		if t := claudeacct.Token(a.ID); t != "" && t == tok {
+			return true
+		}
+	}
+	return false
 }
 
 func accountName(c *config.Config, id string) string {

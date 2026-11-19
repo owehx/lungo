@@ -12,6 +12,7 @@ import (
 
 	"github.com/gofrs/flock"
 
+	"skybuild/internal/config"
 	"skybuild/internal/engine"
 	"skybuild/internal/paths"
 )
@@ -38,6 +39,9 @@ func proxyMain() {
 func ensureClaudeProxy() {
 	if runtime.GOOS != "darwin" || os.Getenv("SKY_HEADLESS") != "" || os.Getenv("SKY_NO_CLAUDE_PROXY") != "" {
 		return
+	}
+	if c, err := config.Load(); err != nil || len(c.ClaudeAccounts) == 0 {
+		return // no accounts to move between: sessions keep their own login
 	}
 	bundle, ok := appBundle()
 	if !ok || filepath.Dir(bundle) != "/Applications" && filepath.Dir(bundle) != filepath.Join(paths.Home(), "Applications") {
