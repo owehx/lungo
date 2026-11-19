@@ -33,6 +33,10 @@ func main() {
 		installMain(os.Args[2:]) // the helper that puts an update in place (update.go)
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "--claude-proxy" {
+		proxyMain() // Claude sessions' requests, on the account with room (claudeproxy.go)
+		return
+	}
 	osx.FixLocale() // before anything starts a program: tmux reads it
 	keepErrors()
 	stacksOnSignal()

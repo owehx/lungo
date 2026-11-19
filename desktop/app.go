@@ -82,6 +82,7 @@ func (a *App) startup(ctx context.Context) {
 	_ = paths.Ensure()
 	startIcon()
 	refreshLoginItem()
+	go ensureClaudeProxy()
 	a.win.start()
 	a.win.onQuitAsked(func() { wruntime.Quit(ctx) })
 	watchClose()

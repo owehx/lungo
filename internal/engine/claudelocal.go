@@ -62,12 +62,16 @@ const claudeInstaller = "curl -fsSL https://claude.ai/install.sh | bash"
 func localLoginScriptText() string {
 	tok := sshx.Quote(localTokenFile())
 	mark := sshx.Quote(localLoginMarks()) + `/$$`
+	// With the Claude proxy up, Claude's requests go through it (claudeproxy.go): it moves
+	// them to the next account when one is used up, so this Claude never has to restart for a
+	// switch (its mark says so).
+	proxy := "http://127.0.0.1:" + strconv.Itoa(ClaudeProxyPort)
 	install := `if ! /usr/bin/which claude >/dev/null 2>&1; then echo "Installing Claude Code (Lungo does this once)..."; ` + claudeInstaller + `; hash -r; /usr/bin/which claude >/dev/null 2>&1 || { echo "Couldn't install Claude Code. Get it from https://claude.com/claude-code and try again." >&2; return 1; }; fi; `
 	return `# Written by sky. Claude in Lungo's sessions on this computer signs in as the Claude account
 # the machines use; Claude anywhere else keeps this computer's own login.
 export SKY_CLAUDE_LOGIN=` + sshx.Quote(localLoginScript()) + `
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$PATH:$HOME/.local/bin" ;; esac
-function claude { ` + install + `if [ -z "$CLAUDE_CONFIG_DIR" ] && [ -r ` + tok + ` ]; then printf . 2>/dev/null >| ` + mark + `; if [ -s ` + tok + ` ]; then CLAUDE_CODE_OAUTH_TOKEN="$(cat ` + tok + `)" command claude "$@"; else command claude "$@"; fi; else command claude "$@"; fi; }
+function claude { ` + install + `if [ -z "$CLAUDE_CONFIG_DIR" ] && [ -r ` + tok + ` ]; then if [ -s ` + tok + ` ]; then if [ -z "$ANTHROPIC_BASE_URL" ] && /usr/bin/curl -sf -m 1 -o /dev/null ` + proxy + `` + ClaudeProxyHealth + `; then printf proxy 2>/dev/null >| ` + mark + `; ANTHROPIC_BASE_URL=` + proxy + ` CLAUDE_CODE_OAUTH_TOKEN="$(cat ` + tok + `)" command claude "$@"; else printf . 2>/dev/null >| ` + mark + `; CLAUDE_CODE_OAUTH_TOKEN="$(cat ` + tok + `)" command claude "$@"; fi; else printf . 2>/dev/null >| ` + mark + `; command claude "$@"; fi; else command claude "$@"; fi; }
 `
 }
 
@@ -98,8 +102,12 @@ func onOldLogin(loginAt time.Time, shells ...int) bool {
 		if pid <= 0 {
 			continue
 		}
-		if st, err := os.Stat(filepath.Join(localLoginMarks(), strconv.Itoa(pid))); err == nil && !st.ModTime().Before(loginAt) {
+		f := filepath.Join(localLoginMarks(), strconv.Itoa(pid))
+		if st, err := os.Stat(f); err == nil && !st.ModTime().Before(loginAt) {
 			return false
+		}
+		if b, err := os.ReadFile(f); err == nil && string(b) == "proxy" {
+			return false // its requests go through the proxy, on whichever account has room
 		}
 	}
 	return true
